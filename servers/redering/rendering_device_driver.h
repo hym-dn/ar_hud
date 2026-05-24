@@ -287,10 +287,9 @@ namespace arhud
         /**
          * @brief 从 GLSL 源码创建着色器
          *
-         * 编译并链接顶点着色器和片段着色器。
+         * 编译并链接多个着色器阶段。
          *
-         * @param[in] p_vertex_source   顶点着色器 GLSL 源码（以 \0 结尾）
-         * @param[in] p_fragment_source 片段着色器 GLSL 源码（以 \0 结尾）
+         * @param[in] p_stage_sources   着色器阶段源码数组
          * @param[in] p_uniforms        着色器 Uniform 描述数组
          * @param[in] p_push_constant_size Push Constant 大小（字节），0 表示不使用
          *
@@ -299,8 +298,7 @@ namespace arhud
          * @note OpenGL 实现会在编译时查询所有 Uniform 位置并缓存
          */
         virtual ShaderID ShaderCreateFromGLSL(
-            const char *p_vertex_source,
-            const char *p_fragment_source,
+            VectorView<ShaderStageSource> p_stage_sources,
             VectorView<ShaderUniform> p_uniforms,
             uint32_t p_push_constant_size) = 0;
 
@@ -635,6 +633,25 @@ namespace arhud
         virtual void CommandCopyBuffer(BufferID p_src_buffer,
                                        BufferID p_dst_buffer,
                                        VectorView<BufferCopyRegion> p_regions) = 0;
+
+        /**
+         * @brief 拷贝缓冲区数据到纹理
+         *
+         * 将 Buffer 中的像素数据上传到 Texture 的指定子资源。
+         * OpenGL 实现：绑定 Buffer 为 PBO，调用 glTexSubImage2D。
+         * Vulkan 实现：vkCmdCopyBufferToImage。
+         *
+         * @param[in] p_src_buffer 源缓冲区
+         * @param[in] p_dst_texture 目标纹理
+         * @param[in] p_regions    拷贝区域数组
+         *
+         * @note OpenGL 实现使用 PBO 方式：先绑定 Buffer 到 GL_PIXEL_UNPACK_BUFFER，
+         *       然后调用 glTexSubImage2D，最后解绑 PBO。
+         */
+        virtual void CommandCopyBufferToTexture(
+            BufferID p_src_buffer,
+            TextureID p_dst_texture,
+            VectorView<BufferTextureCopyRegion> p_regions) = 0;
 
         /**
          * @brief 清除颜色纹理

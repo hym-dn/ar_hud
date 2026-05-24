@@ -34,6 +34,7 @@ set(SERVERS_HEADERS
     redering/rendering_device.h         # High-level rendering device (resource lifecycle, staging buffer, frame loop)
     redering/command_buffer.h                # Command buffer interface (command types, ICommandBuffer)
     redering/resource_tracker.h              # Lightweight resource tracker (ResourceUsage, ResourceType, ResourceTracker)
+    redering/storage/shader_storage.h        # Shader resource storage with metadata and source caching
 )
 
 # --- Library target definition -------------------------------------------

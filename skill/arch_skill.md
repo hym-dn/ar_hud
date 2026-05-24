@@ -5218,14 +5218,15 @@ platform/               — 纯粹的平台 API 封装（薄封装，无业务�
 12. **CommandBuffer 是内部细节**：CommandBufferAcquire/Release/GetDriverCmd 为 private 方法，仅 DrawList 内部使用
 13. **RCD::Initialize 接受窗口参数**：内部创建引导 Surface/Context + 加载 GL 函数，消除冗余 Surface/Context 对
 14. **RDG Lite 简化实现**：当前使用 ICommandBuffer 录制/回放，非 Godot 的序列化字节流 + 帧末统一编译。公共 API 与 Godot 对齐，内部实现简化
+15. **RDG 完整实现时机**：Phase 7（Vulkan 后端时同步引入），触发条件详见 [phase3_plan.md](file:///d:/Work/ar_hud/skill/phase3_plan.md) §2.2
 
 #### 未实现
-- ⬜ Layer 4: 资源存储层 (ShaderStorage/TextureStorage/MeshStorage/MaterialStorage/FontStorage)
-- ⬜ Layer 5: 渲染组合器 (Compositor/CanvasRenderer/HUDRenderer)
-- ⬜ Layer 6: 渲染服务器 (Scene Tree/HUD Layout Engine)
-- ⬜ Layer 7: 应用层 (ARHudEngine 主循环)
-- ⬜ RDG 完整实现（序列化字节流 + 帧末统一编译 + 屏障推导，当前为 RDG Lite 简化版）
-- ⬜ Vulkan 后端
+- ⬜ Layer 4: 资源存储层 (ShaderStorage/TextureStorage/MeshStorage/MaterialStorage/FontStorage) — 详见 [phase3_plan.md](file:///d:/Work/ar_hud/skill/phase3_plan.md) §3
+- ⬜ Layer 5: 渲染组合器 (Compositor/CanvasRenderer/HUDRenderer) — 详见 [phase3_plan.md](file:///d:/Work/ar_hud/skill/phase3_plan.md) §4
+- ⬜ Layer 6: 渲染服务器 (Scene Tree/HUD Layout Engine) — 详见 [phase3_plan.md](file:///d:/Work/ar_hud/skill/phase3_plan.md) §5
+- ⬜ Layer 7: 应用层 (ARHudEngine 主循环) — 详见 [phase3_plan.md](file:///d:/Work/ar_hud/skill/phase3_plan.md) §5
+- ⬜ RDG 完整实现（序列化字节流 + 帧末统一编译 + 屏障推导）— 详见 [phase3_plan.md](file:///d:/Work/ar_hud/skill/phase3_plan.md) §7
+- ⬜ Vulkan 后端 — 详见 [phase3_plan.md](file:///d:/Work/ar_hud/skill/phase3_plan.md) §7
 - ⬜ 非 Windows 平台
 
 ---

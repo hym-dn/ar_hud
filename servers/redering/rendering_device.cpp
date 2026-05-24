@@ -381,9 +381,22 @@ namespace arhud
 
         frame_number_++;
 
-        if (staging_buffer_block_index_ < staging_buffer_blocks_.Size())
+        small_staging_block_.fill_amount = 0;
+
+        staging_buffer_block_index_ = 0;
+        for (uint32_t i = 0; i < staging_buffer_blocks_.Size(); ++i)
         {
-            staging_buffer_blocks_[staging_buffer_block_index_].fill_amount = 0;
+            StagingBufferBlock &block = staging_buffer_blocks_[i];
+            if (block.frame_used == 0 ||
+                block.frame_used <= frame_number_ - frame_count_)
+            {
+                block.fill_amount = 0;
+                if (staging_buffer_block_index_ == 0 ||
+                    block.fill_amount < staging_buffer_blocks_[staging_buffer_block_index_].fill_amount)
+                {
+                    staging_buffer_block_index_ = i;
+                }
+            }
         }
     }
 
@@ -619,25 +632,38 @@ namespace arhud
     // Shader 管理
     // ═══════════════════════════════════════════════════════════════════════
 
-    RDShaderID RenderingDevice::ShaderCreateFromGLSL(const char *p_vertex_source,
-                                                     const char *p_fragment_source,
+    RDShaderID RenderingDevice::ShaderCreateFromGLSL(VectorView<ShaderStageSource> p_stage_sources,
                                                      VectorView<ShaderUniform> p_uniforms,
                                                      uint32_t p_push_constant_size)
     {
         ARHUD_ASSERT(initialized_, "RenderingDevice not initialized");
-        ARHUD_ASSERT(p_vertex_source != nullptr, "Vertex source must not be null");
-        ARHUD_ASSERT(p_fragment_source != nullptr, "Fragment source must not be null");
 
         ShaderID driver_id = device_driver_->ShaderCreateFromGLSL(
-            p_vertex_source, p_fragment_source, p_uniforms, p_push_constant_size);
-        if (!driver_id.IsValid())
-        {
-            ARHUD_LOG_ERROR("kFailed", "RenderingDevice::ShaderCreateFromGLSL() driver failed");
-            return RDShaderID();
-        }
+            p_stage_sources, p_uniforms, p_push_constant_size);
 
         auto *shader = ARHUD_NEW(Shader);
         shader->driver_id = driver_id;
+        shader->is_valid = driver_id.IsValid();
+
+        if (shader->is_valid)
+        {
+            for (uint32_t i = 0; i < p_uniforms.Size(); ++i)
+            {
+                shader->uniforms.PushBack(p_uniforms[i]);
+            }
+            shader->push_constant_size = p_push_constant_size;
+
+            bool has_compute = false;
+            for (uint32_t i = 0; i < p_stage_sources.Size(); ++i)
+            {
+                shader->stage_bits.SetFlag(p_stage_sources[i].stage);
+                if (p_stage_sources[i].stage == ShaderStage::kCompute)
+                {
+                    has_compute = true;
+                }
+            }
+            shader->is_compute = has_compute;
+        }
 
         RID rid = shader_owner_.MakeRid(shader);
         return RDShaderID(rid);
@@ -670,6 +696,72 @@ namespace arhud
         }
 
         return shader->driver_id;
+    }
+
+    const LocalVector<ShaderUniform> &RenderingDevice::ShaderGetUniforms(RDShaderID p_shader) const
+    {
+        static const LocalVector<ShaderUniform> kEmptyUniforms;
+
+        if (p_shader.IsNull())
+        {
+            return kEmptyUniforms;
+        }
+
+        const Shader *shader = shader_owner_.GetOrNull(p_shader.GetRid());
+        if (shader == nullptr)
+        {
+            return kEmptyUniforms;
+        }
+
+        return shader->uniforms;
+    }
+
+    uint32_t RenderingDevice::ShaderGetPushConstantSize(RDShaderID p_shader) const
+    {
+        if (p_shader.IsNull())
+        {
+            return 0;
+        }
+
+        const Shader *shader = shader_owner_.GetOrNull(p_shader.GetRid());
+        if (shader == nullptr)
+        {
+            return 0;
+        }
+
+        return shader->push_constant_size;
+    }
+
+    bool RenderingDevice::ShaderIsValid(RDShaderID p_shader) const
+    {
+        if (p_shader.IsNull())
+        {
+            return false;
+        }
+
+        const Shader *shader = shader_owner_.GetOrNull(p_shader.GetRid());
+        if (shader == nullptr)
+        {
+            return false;
+        }
+
+        return shader->is_valid;
+    }
+
+    bool RenderingDevice::ShaderIsCompute(RDShaderID p_shader) const
+    {
+        if (p_shader.IsNull())
+        {
+            return false;
+        }
+
+        const Shader *shader = shader_owner_.GetOrNull(p_shader.GetRid());
+        if (shader == nullptr)
+        {
+            return false;
+        }
+
+        return shader->is_compute;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1112,8 +1204,8 @@ namespace arhud
     }
 
     void RenderingDevice::DrawListSetViewport(DrawListID p_list,
-                                               int32_t p_x, int32_t p_y,
-                                               uint32_t p_width, uint32_t p_height)
+                                              int32_t p_x, int32_t p_y,
+                                              uint32_t p_width, uint32_t p_height)
     {
         (void)p_list;
         if (!draw_list_.active || draw_list_.driver_cmd == nullptr)
@@ -1124,8 +1216,8 @@ namespace arhud
     }
 
     void RenderingDevice::DrawListSetScissor(DrawListID p_list,
-                                              int32_t p_x, int32_t p_y,
-                                              uint32_t p_width, uint32_t p_height)
+                                             int32_t p_x, int32_t p_y,
+                                             uint32_t p_width, uint32_t p_height)
     {
         (void)p_list;
         if (!draw_list_.active || draw_list_.driver_cmd == nullptr)
@@ -1136,8 +1228,8 @@ namespace arhud
     }
 
     void RenderingDevice::DrawListSetBlendConstants(DrawListID p_list,
-                                                     float p_r, float p_g,
-                                                     float p_b, float p_a)
+                                                    float p_r, float p_g,
+                                                    float p_b, float p_a)
     {
         (void)p_list;
         if (!draw_list_.active || draw_list_.driver_cmd == nullptr)
@@ -1164,8 +1256,8 @@ namespace arhud
     }
 
     void RenderingDevice::DrawListBindUniformSet(DrawListID p_list,
-                                                  RDUniformSetID p_uniform_set,
-                                                  uint32_t p_set_index)
+                                                 RDUniformSetID p_uniform_set,
+                                                 uint32_t p_set_index)
     {
         (void)p_list;
         if (!draw_list_.active || draw_list_.driver_cmd == nullptr)
@@ -1182,9 +1274,9 @@ namespace arhud
     }
 
     void RenderingDevice::DrawListBindVertexBuffers(DrawListID p_list,
-                                                     const RDBufferID *p_buffers,
-                                                     const uint64_t *p_offsets,
-                                                     uint32_t p_count)
+                                                    const RDBufferID *p_buffers,
+                                                    const uint64_t *p_offsets,
+                                                    uint32_t p_count)
     {
         (void)p_list;
         if (!draw_list_.active || draw_list_.driver_cmd == nullptr)
@@ -1206,9 +1298,9 @@ namespace arhud
     }
 
     void RenderingDevice::DrawListBindIndexBuffer(DrawListID p_list,
-                                                   RDBufferID p_buffer,
-                                                   IndexBufferFormat p_format,
-                                                   uint64_t p_offset)
+                                                  RDBufferID p_buffer,
+                                                  IndexBufferFormat p_format,
+                                                  uint64_t p_offset)
     {
         (void)p_list;
         if (!draw_list_.active || draw_list_.driver_cmd == nullptr)
@@ -1237,8 +1329,8 @@ namespace arhud
     }
 
     void RenderingDevice::DrawListDrawIndexed(DrawListID p_list,
-                                               uint32_t p_index_count,
-                                               uint32_t p_instance_count)
+                                              uint32_t p_index_count,
+                                              uint32_t p_instance_count)
     {
         (void)p_list;
         if (!draw_list_.active || draw_list_.driver_cmd == nullptr)
@@ -1701,6 +1793,33 @@ namespace arhud
             staging_buffer_blocks_.PushBack(block);
         }
 
+        staging_buffer_total_size_ = static_cast<uint64_t>(frame_count_) * staging_buffer_size_;
+
+        small_staging_block_.driver_id = device_driver_->BufferCreate(
+            kSmallStagingBlockSize,
+            BitField<BufferUsageBits>(BufferUsageBits::kTransferFrom) |
+                BitField<BufferUsageBits>(BufferUsageBits::kTransferTo),
+            MemoryAllocationType::kCpu);
+        if (!small_staging_block_.driver_id.IsValid())
+        {
+            ARHUD_LOG_ERROR("kFailed", "RenderingDevice: failed to create small staging buffer block");
+            DestroyStagingBuffer();
+            return Error::kFailed;
+        }
+
+        small_staging_block_.data_ptr = device_driver_->BufferMap(small_staging_block_.driver_id);
+        if (small_staging_block_.data_ptr == nullptr)
+        {
+            ARHUD_LOG_ERROR("kFailed", "RenderingDevice: failed to map small staging buffer block");
+            device_driver_->BufferFree(small_staging_block_.driver_id);
+            small_staging_block_.driver_id = BufferID();
+            DestroyStagingBuffer();
+            return Error::kFailed;
+        }
+
+        small_staging_block_.frame_used = 0;
+        small_staging_block_.fill_amount = 0;
+
         return Error::kOK;
     }
 
@@ -1717,6 +1836,206 @@ namespace arhud
             }
         }
         staging_buffer_blocks_.Clear();
+        staging_buffer_total_size_ = 0;
+
+        small_staging_block_.data_ptr = nullptr;
+        if (small_staging_block_.driver_id.IsValid())
+        {
+            device_driver_->BufferFree(small_staging_block_.driver_id);
+            small_staging_block_.driver_id = BufferID();
+        }
+    }
+
+    Error RenderingDevice::StagingBufferAllocate(uint32_t p_size,
+                                                  StagingBufferAllocation &r_allocation)
+    {
+        if (p_size == 0)
+        {
+            return Error::kFailed;
+        }
+
+        if (p_size <= kSmallUploadMax)
+        {
+            static constexpr uint32_t kSmallAlignment = 32;
+            uint32_t aligned_size = (p_size + kSmallAlignment - 1) & ~(kSmallAlignment - 1);
+
+            if (aligned_size <= kSmallStagingBlockSize - small_staging_block_.fill_amount)
+            {
+                r_allocation.data_ptr = small_staging_block_.data_ptr + small_staging_block_.fill_amount;
+                r_allocation.driver_id = small_staging_block_.driver_id;
+                r_allocation.offset = small_staging_block_.fill_amount;
+                small_staging_block_.fill_amount += aligned_size;
+                return Error::kOK;
+            }
+        }
+
+        if (p_size <= kLargeUploadThreshold)
+        {
+            static constexpr uint32_t kMediumAlignment = 256;
+            uint32_t aligned_size = (p_size + kMediumAlignment - 1) & ~(kMediumAlignment - 1);
+
+            if (staging_buffer_block_index_ < staging_buffer_blocks_.Size())
+            {
+                StagingBufferBlock &block = staging_buffer_blocks_[staging_buffer_block_index_];
+
+                if (aligned_size <= staging_buffer_size_ - block.fill_amount)
+                {
+                    r_allocation.data_ptr = block.data_ptr + block.fill_amount;
+                    r_allocation.driver_id = block.driver_id;
+                    r_allocation.offset = block.fill_amount;
+                    block.fill_amount += aligned_size;
+                    return Error::kOK;
+                }
+            }
+
+            for (uint32_t i = 0; i < staging_buffer_blocks_.Size(); ++i)
+            {
+                StagingBufferBlock &block = staging_buffer_blocks_[i];
+                if (block.frame_used == 0 ||
+                    block.frame_used <= frame_number_ - frame_count_)
+                {
+                    if (aligned_size <= staging_buffer_size_ - block.fill_amount)
+                    {
+                        staging_buffer_block_index_ = i;
+                        r_allocation.data_ptr = block.data_ptr + block.fill_amount;
+                        r_allocation.driver_id = block.driver_id;
+                        r_allocation.offset = block.fill_amount;
+                        block.fill_amount += aligned_size;
+                        return Error::kOK;
+                    }
+                }
+            }
+        }
+
+        uint32_t new_block_size = p_size > staging_buffer_size_ ? p_size : staging_buffer_size_;
+
+        if (staging_buffer_total_size_ + new_block_size > kMaxStagingTotalSize)
+        {
+            ARHUD_LOG_ERROR("kFailed",
+                "StagingBufferAllocate: total staging size exceeded limit (%llu > %llu), size=%u",
+                static_cast<unsigned long long>(staging_buffer_total_size_ + new_block_size),
+                static_cast<unsigned long long>(kMaxStagingTotalSize),
+                p_size);
+            return Error::kFailed;
+        }
+
+        StagingBufferBlock new_block;
+        new_block.driver_id = device_driver_->BufferCreate(
+            new_block_size,
+            BitField<BufferUsageBits>(BufferUsageBits::kTransferFrom) |
+                BitField<BufferUsageBits>(BufferUsageBits::kTransferTo),
+            MemoryAllocationType::kCpu);
+        if (!new_block.driver_id.IsValid())
+        {
+            ARHUD_LOG_ERROR("kFailed", "StagingBufferAllocate: failed to create new block, size=%u", new_block_size);
+            return Error::kFailed;
+        }
+
+        new_block.data_ptr = device_driver_->BufferMap(new_block.driver_id);
+        if (new_block.data_ptr == nullptr)
+        {
+            ARHUD_LOG_ERROR("kFailed", "StagingBufferAllocate: failed to map new block");
+            device_driver_->BufferFree(new_block.driver_id);
+            return Error::kFailed;
+        }
+
+        new_block.frame_used = frame_number_;
+        new_block.fill_amount = 0;
+
+        staging_buffer_blocks_.PushBack(new_block);
+        staging_buffer_total_size_ += new_block_size;
+        staging_buffer_block_index_ = staging_buffer_blocks_.Size() - 1;
+
+        StagingBufferBlock &block = staging_buffer_blocks_[staging_buffer_block_index_];
+        r_allocation.data_ptr = block.data_ptr + block.fill_amount;
+        r_allocation.driver_id = block.driver_id;
+        r_allocation.offset = block.fill_amount;
+        block.fill_amount += p_size;
+
+        return Error::kOK;
+    }
+
+    Error RenderingDevice::BufferUpdate(RDBufferID p_buffer, uint32_t p_offset,
+                                         uint32_t p_size, const void *p_data)
+    {
+        if (p_buffer.IsNull() || p_data == nullptr || p_size == 0)
+        {
+            return Error::kFailed;
+        }
+
+        BufferID dst_driver_id = BufferGetDriverId(p_buffer);
+        if (!dst_driver_id.IsValid())
+        {
+            ARHUD_LOG_ERROR("kFailed", "BufferUpdate: invalid buffer RID");
+            return Error::kFailed;
+        }
+
+        StagingBufferAllocation alloc;
+        Error err = StagingBufferAllocate(p_size, alloc);
+        if (err != Error::kOK)
+        {
+            return err;
+        }
+
+        memcpy(alloc.data_ptr, p_data, p_size);
+
+        BufferCopyRegion region;
+        region.src_offset = alloc.offset;
+        region.dst_offset = p_offset;
+        region.size = p_size;
+
+        device_driver_->CommandCopyBuffer(
+            alloc.driver_id, dst_driver_id,
+            VectorView<BufferCopyRegion>(&region, 1));
+
+        return Error::kOK;
+    }
+
+    Error RenderingDevice::TextureUpdate(RDTextureID p_texture, uint32_t p_layer,
+                                          uint32_t p_mipmap, const void *p_data,
+                                          uint32_t p_data_size)
+    {
+        if (p_texture.IsNull() || p_data == nullptr || p_data_size == 0)
+        {
+            return Error::kFailed;
+        }
+
+        TextureID dst_driver_id = TextureGetDriverId(p_texture);
+        if (!dst_driver_id.IsValid())
+        {
+            ARHUD_LOG_ERROR("kFailed", "TextureUpdate: invalid texture RID");
+            return Error::kFailed;
+        }
+
+        const TextureFormat &format = TextureGetFormat(p_texture);
+
+        StagingBufferAllocation alloc;
+        Error err = StagingBufferAllocate(p_data_size, alloc);
+        if (err != Error::kOK)
+        {
+            return err;
+        }
+
+        memcpy(alloc.data_ptr, p_data, p_data_size);
+
+        BufferTextureCopyRegion region;
+        region.buffer_offset = alloc.offset;
+        region.row_pitch = 0;
+        region.texture_subresource.aspect = TextureAspect::kColor;
+        region.texture_subresource.layer = p_layer;
+        region.texture_subresource.mipmap = p_mipmap;
+        region.texture_offset_x = 0;
+        region.texture_offset_y = 0;
+        region.texture_offset_z = 0;
+        region.texture_region_width = format.width;
+        region.texture_region_height = format.height;
+        region.texture_region_depth = 1;
+
+        device_driver_->CommandCopyBufferToTexture(
+            alloc.driver_id, dst_driver_id,
+            VectorView<BufferTextureCopyRegion>(&region, 1));
+
+        return Error::kOK;
     }
 
 } // namespace arhud

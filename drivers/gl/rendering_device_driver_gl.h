@@ -241,8 +241,7 @@ namespace arhud
     struct GLShaderInfo
     {
         uint32_t program = 0;
-        uint32_t vertex_shader = 0;
-        uint32_t fragment_shader = 0;
+        LocalVector<uint32_t> shader_objects;
 
         struct UniformLocation
         {
@@ -272,6 +271,27 @@ namespace arhud
         uint32_t height = 0;
         LocalVector<uint32_t> color_attachments;
         uint32_t depth_stencil_attachment = 0;
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // GL 纹理信息
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @brief OpenGL 纹理元数据
+     *
+     * 记录纹理的格式、尺寸和 GL 目标，供 CommandCopyBufferToTexture 使用。
+     * TextureID 本身只存储 GLuint，不包含格式信息，因此需要额外簿记。
+     */
+    struct GLTextureInfo
+    {
+        uint32_t target = 0x0DE1; // GL_TEXTURE_2D
+        DataFormat format = DataFormat::kR8G8B8A8Unorm;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t depth = 1;
+        uint32_t mipmaps = 1;
+        uint32_t layers = 1;
     };
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -569,8 +589,7 @@ namespace arhud
         /**
          * @brief 从 GLSL 源码创建着色器
          *
-         * @param[in] p_vertex_source    顶点着色器 GLSL 源码
-         * @param[in] p_fragment_source 片段着色器 GLSL 源码
+         * @param[in] p_stage_sources   着色器阶段源码数组
          * @param[in] p_uniforms       Uniform 描述数组
          * @param[in] p_push_constant_size Push Constant 大小（字节）
          *
@@ -581,8 +600,7 @@ namespace arhud
          * @note Uniform 位置在创建时查询并缓存
          */
         ShaderID ShaderCreateFromGLSL(
-            const char *p_vertex_source,
-            const char *p_fragment_source,
+            VectorView<ShaderStageSource> p_stage_sources,
             VectorView<ShaderUniform> p_uniforms,
             uint32_t p_push_constant_size) override;
 
@@ -968,6 +986,22 @@ namespace arhud
             float p_depth, uint32_t p_stencil,
             const TextureSubresourceRange &p_subresources) override;
 
+        /**
+         * @brief 拷贝缓冲区数据到纹理
+         *
+         * 使用 PBO 方式上传像素数据到纹理。
+         * OpenGL 实现：绑定 Buffer 到 GL_PIXEL_UNPACK_BUFFER，
+         * 然后调用 glTexSubImage2D/3D，最后解绑 PBO。
+         *
+         * @param[in] p_src_buffer  源缓冲区（PBO）
+         * @param[in] p_dst_texture 目标纹理
+         * @param[in] p_regions     拷贝区域数组
+         */
+        void CommandCopyBufferToTexture(
+            BufferID p_src_buffer,
+            TextureID p_dst_texture,
+            VectorView<BufferTextureCopyRegion> p_regions) override;
+
         // ═══════════════════════════════════════════════════════════════════════
         // 帧同步
         // ═══════════════════════════════════════════════════════════════════════
@@ -1110,8 +1144,7 @@ namespace arhud
          *
          * @return 程序对象 ID，失败返回 0
          */
-        static uint32_t LinkProgram(uint32_t p_vertex_shader,
-                                    uint32_t p_fragment_shader);
+        static uint32_t LinkProgram(const LocalVector<uint32_t> &p_shader_objects);
 
         /**
          * @brief 将 DataFormat 映射到 GL 内部格式
@@ -1173,6 +1206,8 @@ namespace arhud
         PagedAllocator<GLUniformSetInfo> uniform_set_allocator_;
         PagedAllocator<GLVertexFormatInfo> vertex_format_allocator_;
         PagedAllocator<GLCommandBuffer> command_buffer_allocator_;
+
+        HashMap<uint64_t, GLTextureInfo> texture_infos_;
 
         uint64_t limits_[static_cast<uint32_t>(Limit::kMax)] = {};
         Capabilities capabilities_;

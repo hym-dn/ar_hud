@@ -540,7 +540,19 @@ namespace arhud
             glTexParameteri(target, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(p_format.mipmaps - 1));
         }
 
-        return TextureID(static_cast<uint64_t>(gl_texture));
+        TextureID tex_id(static_cast<uint64_t>(gl_texture));
+
+        GLTextureInfo info;
+        info.target = target;
+        info.format = p_format.format;
+        info.width = p_format.width;
+        info.height = p_format.height;
+        info.depth = p_format.depth;
+        info.mipmaps = p_format.mipmaps;
+        info.layers = p_format.array_layers;
+        texture_infos_.Insert(tex_id.GetId(), info);
+
+        return tex_id;
     }
 
     void GLRenderingDeviceDriver::TextureFree(TextureID p_texture)
@@ -552,6 +564,8 @@ namespace arhud
 
         GLuint gl_texture = static_cast<GLuint>(p_texture.GetId());
         glDeleteTextures(1, &gl_texture);
+
+        texture_infos_.Erase(p_texture.GetId());
     }
 
     uint64_t GLRenderingDeviceDriver::TextureGetAllocationSize(TextureID p_texture)
@@ -774,38 +788,80 @@ namespace arhud
     }
 
     ShaderID GLRenderingDeviceDriver::ShaderCreateFromGLSL(
-      const char *p_vertex_source,
-      const char *p_fragment_source,
+      VectorView<ShaderStageSource> p_stage_sources,
       VectorView<ShaderUniform> p_uniforms,
       uint32_t p_push_constant_size)
     {
         (void)p_push_constant_size;
 
-        uint32_t vs = CompileShader(p_vertex_source, GL_VERTEX_SHADER);
-        if (vs == 0)
+        if (p_stage_sources.Size() == 0)
         {
             return ShaderID();
         }
 
-        uint32_t fs = CompileShader(p_fragment_source, GL_FRAGMENT_SHADER);
-        if (fs == 0)
+        LocalVector<uint32_t> compiled_shaders;
+
+        for (uint32_t i = 0; i < p_stage_sources.Size(); ++i)
         {
-            glDeleteShader(vs);
+            const ShaderStageSource &stage_src = p_stage_sources[i];
+            if (stage_src.source == nullptr)
+            {
+                continue;
+            }
+
+            uint32_t gl_type = 0;
+            switch (stage_src.stage)
+            {
+            case ShaderStage::kVertex:
+                gl_type = GL_VERTEX_SHADER;
+                break;
+            case ShaderStage::kFragment:
+                gl_type = GL_FRAGMENT_SHADER;
+                break;
+            case ShaderStage::kTessellationControl:
+                gl_type = GL_TESS_CONTROL_SHADER;
+                break;
+            case ShaderStage::kTessellationEvaluation:
+                gl_type = GL_TESS_EVALUATION_SHADER;
+                break;
+            case ShaderStage::kCompute:
+                gl_type = GL_COMPUTE_SHADER;
+                break;
+            default:
+                continue;
+            }
+
+            uint32_t shader_obj = CompileShader(stage_src.source, gl_type);
+            if (shader_obj == 0)
+            {
+                for (uint32_t j = 0; j < compiled_shaders.Size(); ++j)
+                {
+                    glDeleteShader(compiled_shaders[j]);
+                }
+                return ShaderID();
+            }
+
+            compiled_shaders.PushBack(shader_obj);
+        }
+
+        if (compiled_shaders.Size() == 0)
+        {
             return ShaderID();
         }
 
-        uint32_t program = LinkProgram(vs, fs);
+        uint32_t program = LinkProgram(compiled_shaders);
         if (program == 0)
         {
-            glDeleteShader(vs);
-            glDeleteShader(fs);
+            for (uint32_t i = 0; i < compiled_shaders.Size(); ++i)
+            {
+                glDeleteShader(compiled_shaders[i]);
+            }
             return ShaderID();
         }
 
         GLShaderInfo *info = shader_allocator_.Alloc();
         info->program = program;
-        info->vertex_shader = vs;
-        info->fragment_shader = fs;
+        info->shader_objects = compiled_shaders;
 
         for (uint32_t i = 0; i < p_uniforms.Size(); ++i)
         {
@@ -841,13 +897,9 @@ namespace arhud
         {
             glDeleteProgram(info->program);
         }
-        if (info->vertex_shader != 0)
+        for (uint32_t i = 0; i < info->shader_objects.Size(); ++i)
         {
-            glDeleteShader(info->vertex_shader);
-        }
-        if (info->fragment_shader != 0)
-        {
-            glDeleteShader(info->fragment_shader);
+            glDeleteShader(info->shader_objects[i]);
         }
 
         shader_allocator_.Free(info);
@@ -1454,6 +1506,79 @@ namespace arhud
         }
     }
 
+    void GLRenderingDeviceDriver::CommandCopyBufferToTexture(
+      BufferID p_src_buffer,
+      TextureID p_dst_texture,
+      VectorView<BufferTextureCopyRegion> p_regions)
+    {
+        if (!p_src_buffer.IsValid() || !p_dst_texture.IsValid())
+        {
+            return;
+        }
+
+        GLTextureInfo *tex_info = nullptr;
+        if (texture_infos_.Has(p_dst_texture.GetId()))
+        {
+            tex_info = &texture_infos_[p_dst_texture.GetId()];
+        }
+        if (tex_info == nullptr)
+        {
+            return;
+        }
+
+        GLuint src_gl = static_cast<GLuint>(p_src_buffer.GetId());
+        GLuint dst_gl = static_cast<GLuint>(p_dst_texture.GetId());
+
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, src_gl);
+
+        state_cache_.BindTexture(tex_info->target, dst_gl);
+
+        uint32_t gl_format = DataFormatToGLFormat(tex_info->format);
+        uint32_t gl_type = DataFormatToGLType(tex_info->format);
+
+        for (uint32_t i = 0; i < p_regions.Size(); ++i)
+        {
+            const BufferTextureCopyRegion &region = p_regions[i];
+
+            if (tex_info->target == GL_TEXTURE_2D ||
+                tex_info->target == GL_TEXTURE_CUBE_MAP)
+            {
+                GLenum tex_target = tex_info->target;
+                if (tex_info->target == GL_TEXTURE_CUBE_MAP)
+                {
+                    tex_target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + region.texture_subresource.layer;
+                }
+
+                glTexSubImage2D(tex_target,
+                                static_cast<GLint>(region.texture_subresource.mipmap),
+                                region.texture_offset_x,
+                                region.texture_offset_y,
+                                region.texture_region_width,
+                                region.texture_region_height,
+                                gl_format,
+                                gl_type,
+                                reinterpret_cast<const void *>(static_cast<uintptr_t>(region.buffer_offset)));
+            }
+            else if (tex_info->target == GL_TEXTURE_2D_ARRAY ||
+                     tex_info->target == GL_TEXTURE_3D)
+            {
+                glTexSubImage3D(tex_info->target,
+                                static_cast<GLint>(region.texture_subresource.mipmap),
+                                region.texture_offset_x,
+                                region.texture_offset_y,
+                                region.texture_offset_z,
+                                region.texture_region_width,
+                                region.texture_region_height,
+                                region.texture_region_depth,
+                                gl_format,
+                                gl_type,
+                                reinterpret_cast<const void *>(static_cast<uintptr_t>(region.buffer_offset)));
+            }
+        }
+
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    }
+
     void GLRenderingDeviceDriver::CommandClearColorTexture(
       TextureID p_texture,
       float p_color_r, float p_color_g,
@@ -1675,7 +1800,7 @@ namespace arhud
     }
 
     uint32_t GLRenderingDeviceDriver::LinkProgram(
-      uint32_t p_vertex_shader, uint32_t p_fragment_shader)
+      const LocalVector<uint32_t> &p_shader_objects)
     {
         GLuint program = glCreateProgram();
         if (program == 0)
@@ -1684,8 +1809,10 @@ namespace arhud
             return 0;
         }
 
-        glAttachShader(program, p_vertex_shader);
-        glAttachShader(program, p_fragment_shader);
+        for (uint32_t i = 0; i < p_shader_objects.Size(); ++i)
+        {
+            glAttachShader(program, p_shader_objects[i]);
+        }
 
         glLinkProgram(program);
 

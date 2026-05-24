@@ -624,6 +624,27 @@ namespace arhud
     };
 
     /**
+     * @brief 着色器阶段源码对
+     *
+     * 描述一个着色器阶段及其对应的 GLSL 源码。
+     * 用于 ShaderCreateFromGLSL 的多阶段输入，
+     * 替代硬编码的 vertex_source + fragment_source 参数。
+     *
+     * @par 使用示例：
+     *   @code
+     *   LocalVector<ShaderStageSource> stages;
+     *   stages.PushBack({ShaderStage::kVertex, kVertSrc});
+     *   stages.PushBack({ShaderStage::kFragment, kFragSrc});
+     *   rd->ShaderCreateFromGLSL(stages, uniforms, 64);
+     *   @endcode
+     */
+    struct ShaderStageSource
+    {
+        ShaderStage stage = ShaderStage::kMax;
+        const char *source = nullptr;
+    };
+
+    /**
      * @brief Uniform 类型
      *
      * 对齐 Godot UniformType 枚举。

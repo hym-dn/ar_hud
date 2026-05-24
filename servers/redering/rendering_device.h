@@ -125,10 +125,26 @@ namespace arhud
 
     /**
      * @brief Shader 资源簿记
+     *
+     * 存储 API 无关的着色器编译元数据，对齐 Godot 的
+     * Shader : ShaderReflection 设计。驱动特有数据
+     * （如 GL uniform locations、VkDescriptorSetLayout）
+     * 由 RDD 层的 GLShaderInfo / ShaderInfo 持有，
+     * 通过 driver_id 指针即 ID 访问。
+     *
+     * @par 数据分层：
+     *   - RDD 层：API 特有数据（GL uniform locations、VkPipelineLayout）
+     *   - RD 层（本结构）：API 无关的编译元数据
+     *   - ShaderStorage：业务数据（name、source 缓存）
      */
     struct Shader
     {
-        ShaderID driver_id; ///< 驱动层 Shader ID
+        ShaderID driver_id;                     ///< 驱动层 Shader ID
+        LocalVector<ShaderUniform> uniforms;    ///< Uniform 反射数据
+        uint32_t push_constant_size = 0;        ///< Push Constant 块大小（字节）
+        bool is_valid = false;                  ///< 着色器是否编译成功
+        bool is_compute = false;                ///< 是否为计算着色器
+        BitField<ShaderStage> stage_bits;       ///< 着色器阶段位掩码
     };
 
     /**
@@ -273,6 +289,27 @@ namespace arhud
         uint32_t fill_amount = 0;    ///< 当前已填充的字节数
     };
 
+    /**
+     * @brief Staging Buffer 分配结果
+     *
+     * 由 StagingBufferAllocate() 返回，描述一次 Staging 分配的位置信息。
+     * 所有分配均来自持久映射的 Staging Block，无需手动 BufferUnmap。
+     *
+     * @par 使用方式
+     *   @code
+     *   StagingBufferAllocation alloc;
+     *   StagingBufferAllocate(size, alloc);
+     *   memcpy(alloc.data_ptr, data, size);
+     *   device_driver_->CommandCopyBuffer(alloc.driver_id, dst_id, regions);
+     *   @endcode
+     */
+    struct StagingBufferAllocation
+    {
+        uint8_t *data_ptr = nullptr; ///< CPU 端写入指针
+        BufferID driver_id;          ///< 驱动层 Buffer ID
+        uint64_t offset = 0;         ///< 在 Buffer 中的字节偏移
+    };
+
     // ═══════════════════════════════════════════════════════════════════════
     // 帧资源池
     // ═══════════════════════════════════════════════════════════════════════
@@ -359,6 +396,20 @@ namespace arhud
     public:
         static constexpr uint32_t kDefaultFrameCount = 2;
         static constexpr uint32_t kDefaultStagingBufferSize = 4 * 1024 * 1024;
+
+        /**
+         * @brief Staging Buffer 三级分配阈值
+         *
+         * | 数据大小              | 分配策略                          | 对齐   |
+         * |----------------------|----------------------------------|--------|
+         * | ≤ kSmallUploadMax    | 小 Block 紧凑打包（减少 cache miss）| 32B   |
+         * | ≤ kLargeUploadThreshold | 主 Block 线性子分配             | 256B  |
+         * | > kLargeUploadThreshold | 独立临时 Buffer（避免挤占主 Block）| N/A   |
+         */
+        static constexpr uint32_t kSmallUploadMax = 256;
+        static constexpr uint32_t kSmallStagingBlockSize = 64 * 1024;
+        static constexpr uint32_t kLargeUploadThreshold = 64 * 1024;
+        static constexpr uint64_t kMaxStagingTotalSize = 256 * 1024 * 1024;
 
         // ═══════════════════════════════════════════════════════════════════
         // 生命周期
@@ -715,6 +766,34 @@ namespace arhud
          */
         void BufferUnmap(RDBufferID p_buffer);
 
+        /**
+         * @brief 通过 Staging Buffer 更新 GPU Buffer 数据
+         *
+         * 将 CPU 数据通过 Staging Buffer 传输到 GPU Buffer。
+         * 内部使用多级分配策略：
+         *   - 小数据（≤ Staging 剩余空间）：子分配当前帧的 Staging Block
+         *   - 大数据（> Staging 剩余空间）：创建独立临时 Buffer
+         *
+         * @param[in] p_buffer 目标 Buffer RID
+         * @param[in] p_offset 目标 Buffer 中的字节偏移
+         * @param[in] p_size   数据大小（字节）
+         * @param[in] p_data   CPU 端数据指针
+         *
+         * @retval Error::kOK 更新成功
+         * @retval Error::kFailed Staging 分配失败或目标 Buffer 无效
+         *
+         * @pre Initialize() 已调用
+         * @pre p_buffer 为有效的 GPU 侧 Buffer（非 kCpu 分配）
+         *
+         * @par 典型使用
+         *   @code
+         *   float vertices[] = { ... };
+         *   rd.BufferUpdate(vbo_rid, 0, sizeof(vertices), vertices);
+         *   @endcode
+         */
+        Error BufferUpdate(RDBufferID p_buffer, uint32_t p_offset,
+                           uint32_t p_size, const void *p_data);
+
         // ═══════════════════════════════════════════════════════════════════
         // Texture 管理
         // ═══════════════════════════════════════════════════════════════════
@@ -755,6 +834,34 @@ namespace arhud
          */
         const TextureFormat &TextureGetFormat(RDTextureID p_texture) const;
 
+        /**
+         * @brief 通过 Staging Buffer 更新 GPU Texture 数据
+         *
+         * 将 CPU 数据通过 Staging Buffer 传输到 GPU Texture。
+         * 内部使用 Buffer→Texture 拷贝命令（OpenGL: PBO 方式）。
+         *
+         * @param[in] p_texture  目标 Texture RID
+         * @param[in] p_layer    目标数组层（默认 0）
+         * @param[in] p_mipmap   目标 Mipmap 层级（默认 0）
+         * @param[in] p_data     CPU 端数据指针
+         * @param[in] p_data_size 数据大小（字节）
+         *
+         * @retval Error::kOK 更新成功
+         * @retval Error::kFailed Staging 分配失败或目标 Texture 无效
+         *
+         * @pre Initialize() 已调用
+         * @pre p_texture 为有效的 GPU 侧 Texture
+         *
+         * @par 典型使用
+         *   @code
+         *   uint8_t pixels[256*256*4] = { ... };
+         *   rd.TextureUpdate(tex_rid, 0, 0, pixels, sizeof(pixels));
+         *   @endcode
+         */
+        Error TextureUpdate(RDTextureID p_texture, uint32_t p_layer,
+                            uint32_t p_mipmap, const void *p_data,
+                            uint32_t p_data_size);
+
         // ═══════════════════════════════════════════════════════════════════
         // Sampler 管理
         // ═══════════════════════════════════════════════════════════════════
@@ -791,15 +898,13 @@ namespace arhud
         /**
          * @brief 从 GLSL 源码创建 Shader 资源
          *
-         * @param[in] p_vertex_source   顶点着色器 GLSL 源码
-         * @param[in] p_fragment_source 片段着色器 GLSL 源码
+         * @param[in] p_stage_sources   着色器阶段源码数组
          * @param[in] p_uniforms        Uniform 描述数组
          * @param[in] p_push_constant_size Push Constant 大小（字节）
          *
          * @return Shader RID，失败返回空 RID
          */
-        RDShaderID ShaderCreateFromGLSL(const char *p_vertex_source,
-                                        const char *p_fragment_source,
+        RDShaderID ShaderCreateFromGLSL(VectorView<ShaderStageSource> p_stage_sources,
                                         VectorView<ShaderUniform> p_uniforms,
                                         uint32_t p_push_constant_size);
 
@@ -818,6 +923,42 @@ namespace arhud
          * @return 驱动层 ShaderID，无效 RID 返回空 ID
          */
         ShaderID ShaderGetDriverId(RDShaderID p_shader) const;
+
+        /**
+         * @brief 获取 Shader 的 Uniform 反射数据
+         *
+         * @param[in] p_shader Shader RID
+         *
+         * @return Uniform 列表的常量引用，无效 RID 返回空列表
+         */
+        const LocalVector<ShaderUniform> &ShaderGetUniforms(RDShaderID p_shader) const;
+
+        /**
+         * @brief 获取 Shader 的 Push Constant 块大小
+         *
+         * @param[in] p_shader Shader RID
+         *
+         * @return Push Constant 大小（字节），无效 RID 返回 0
+         */
+        uint32_t ShaderGetPushConstantSize(RDShaderID p_shader) const;
+
+        /**
+         * @brief 检查 Shader 是否有效（编译成功）
+         *
+         * @param[in] p_shader Shader RID
+         *
+         * @return 编译成功返回 true，否则返回 false
+         */
+        bool ShaderIsValid(RDShaderID p_shader) const;
+
+        /**
+         * @brief 检查 Shader 是否为计算着色器
+         *
+         * @param[in] p_shader Shader RID
+         *
+         * @return 计算着色器返回 true，否则返回 false
+         */
+        bool ShaderIsCompute(RDShaderID p_shader) const;
 
         // ═══════════════════════════════════════════════════════════════════
         // UniformSet 管理
@@ -1338,6 +1479,24 @@ namespace arhud
          */
         void DestroyStagingBuffer();
 
+        /**
+         * @brief 从 Staging Buffer 分配空间（多级策略）
+         *
+         * 根据请求大小选择不同的分配策略：
+         *   - 数据 ≤ Staging Block 剩余空间：子分配当前帧的 Staging Block
+         *   - 数据 > Staging Block 剩余空间：创建独立临时 Buffer
+         *
+         * @param[in] p_size 请求的数据大小（字节）
+         * @param[out] r_allocation 分配结果
+         *
+         * @retval Error::kOK 分配成功
+         * @retval Error::kFailed 分配失败
+         *
+         * @pre Initialize() 已调用
+         * @pre 必须在 BeginFrame/EndFrame 之间调用
+         */
+        Error StagingBufferAllocate(uint32_t p_size, StagingBufferAllocation &r_allocation);
+
         // ═══════════════════════════════════════════════════════════════════
         // 成员变量
         // ═══════════════════════════════════════════════════════════════════
@@ -1405,8 +1564,10 @@ namespace arhud
 
         // Staging Buffer
         LocalVector<StagingBufferBlock> staging_buffer_blocks_;
+        StagingBufferBlock small_staging_block_;
         uint32_t staging_buffer_block_index_ = 0;
         uint32_t staging_buffer_size_ = kDefaultStagingBufferSize;
+        uint64_t staging_buffer_total_size_ = 0;
 
         // DrawList 状态
         struct DrawListState

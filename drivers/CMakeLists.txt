@@ -27,12 +27,14 @@ if(ARHUD_API_OPENGL)
         gl/rendering_context_driver_gl.cpp
         gl/rendering_device_driver_gl.cpp
         gl/command_buffer_gl.cpp
+        gl/storage/shader_storage_gl.cpp
     )
 
     list(APPEND DRIVERS_HEADERS
         gl/rendering_context_driver_gl.h
         gl/rendering_device_driver_gl.h
         gl/command_buffer_gl.h
+        gl/storage/shader_storage_gl.h
     )
 endif()
 

@@ -42,6 +42,7 @@
 #include "rendering_context_driver.h"
 #include "rendering_device.h"
 #include "rendering_context_driver_gl.h"
+#include "storage/shader_storage.h"
 
 #include <glad/gl.h>
 #include <cstdio>
@@ -178,7 +179,73 @@ int main()
     ARHUD_LOG_INFO("SwapChain bound — entering render loop");
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 7. DrawList 测试 — 高层绘制 API 验证
+    // 7. ShaderStorage 测试 — 编译 GLSL Shader + Uniform 反射
+    // ═══════════════════════════════════════════════════════════════════════
+    ShaderStorage shader_storage;
+    err = shader_storage.Initialize(&rd);
+    if (err != Error::kOK)
+    {
+        ARHUD_LOG_ERROR("kFailed", "Failed to initialize ShaderStorage");
+    }
+    else
+    {
+        ARHUD_LOG_INFO("ShaderStorage initialized");
+
+        const char *kVertSrc = R"glsl(
+#version 450 core
+layout(location = 0) in vec2 a_position;
+layout(location = 1) in vec4 a_color;
+layout(location = 0) out vec4 v_color;
+void main() {
+    gl_Position = vec4(a_position, 0.0, 1.0);
+    v_color = a_color;
+}
+)glsl";
+
+        const char *kFragSrc = R"glsl(
+#version 450 core
+layout(location = 0) in vec4 v_color;
+layout(location = 0) out vec4 frag_color;
+void main() {
+    frag_color = v_color;
+}
+)glsl";
+
+        LocalVector<ShaderUniform> uniforms;
+
+        LocalVector<ShaderStageSource> stages;
+        stages.PushBack({ShaderStage::kVertex, kVertSrc});
+        stages.PushBack({ShaderStage::kFragment, kFragSrc});
+
+        RID shader_rid = shader_storage.ShaderCreateFromSource(
+            "test_passthrough", stages, uniforms, 0);
+
+        if (shader_rid.IsValid())
+        {
+            const ShaderInfo *info = shader_storage.ShaderGetInfo(shader_rid);
+            ARHUD_LOG_INFO("Shader '%s' compiled: valid=%d, uniforms=%u, push_const=%u",
+                           info->name.CStr(),
+                           shader_storage.ShaderIsValid(shader_rid),
+                           shader_storage.ShaderGetUniforms(shader_rid).Size(),
+                           shader_storage.ShaderGetPushConstantSize(shader_rid));
+
+            RDShaderID rd_id = shader_storage.ShaderGetRDId(shader_rid);
+            ARHUD_LOG_INFO("Shader RD ID: valid=%d", rd_id.IsValid());
+
+            shader_storage.ShaderFree(shader_rid);
+            ARHUD_LOG_INFO("Shader freed");
+        }
+        else
+        {
+            ARHUD_LOG_ERROR("kFailed", "Shader compilation failed");
+        }
+
+        shader_storage.Finalize();
+        ARHUD_LOG_INFO("ShaderStorage finalized");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // 8. DrawList 测试 — 高层绘制 API 验证
     // ═══════════════════════════════════════════════════════════════════════
     DrawListID dl = rd.DrawListBegin();
     if (dl != kInvalidDrawListId)
@@ -195,7 +262,7 @@ int main()
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 8. 渲染循环 — DrawList + 彩色清屏
+    // 9. 渲染循环 — DrawList + 彩色清屏
     // ═══════════════════════════════════════════════════════════════════════
     uint32_t frame_count = 0;
 
@@ -225,7 +292,7 @@ int main()
     ARHUD_LOG_INFO("Render loop exited after %u frames", frame_count);
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 9. 清理 — 按初始化的逆序释放
+    // 10. 清理 — 按初始化的逆序释放
     // ═══════════════════════════════════════════════════════════════════════
     rd.Finalize();
     ARHUD_LOG_INFO("RD finalized (RDD freed internally)");

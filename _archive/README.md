@@ -171,7 +171,6 @@ ar_hud/
 │   │   ├── hash_set.h          # 哈希集合
 │   │   ├── list.h              # 双向链表
 │   │   ├── fixed_vector.h      # 栈分配定长数组
-│   │   ├── ring_buffer.h       # 环形缓冲
 │   │   ├── bitfield.h          # 类型安全位域
 │   │   ├── vector_view.h       # 只读内存视图
 │   │   ├── rid.h               # 不透明资源 ID (RID/RIDOwner)
@@ -182,29 +181,41 @@ ar_hud/
 ├── platform/               # 平台抽象层
 │   ├── window.h            # 窗口接口
 │   ├── screen.h            # 屏幕接口
-│   ├── view.h              # 视图接口（HUD 分层）
 │   ├── display_server.h    # 显示服务器接口
-│   ├── gl_manager.h        # GL 上下文管理器接口
-│   └── windows/            # Win32 实现
+│   ├── gl_context_manager.h # GL 上下文管理器接口
+│   ├── frame_presenter.h   # 平台上屏接口（FBO→屏幕）
+│   └── windows/            # Win32 实现（含 frame_presenter_win32）
 │
-├── servers/                # 服务器层
-│   └── redering/           # 渲染接口与实现
-│       ├── rendering_device_commons.h   # 共享枚举/类型
-│       ├── rendering_context_driver.h   # RCD 接口
-│       ├── rendering_device_driver.h    # RDD 接口
-│       ├── rendering_device.h/.cpp      # RD 实现
-│       ├── command_buffer.h             # 命令缓冲接口
-│       └── resource_tracker.h/.cpp      # 资源追踪
-│
-├── drivers/                # 驱动层
-│   └── gl/                 # OpenGL 驱动
+├── drivers/                # 驱动层（契约在根 + GL 实现在 gl/）
+│   ├── rendering_context_driver.h  # RCD 接口（契约）
+│   ├── rendering_device_driver.h   # RDD 接口（契约）
+│   ├── command_buffer.h            # 命令缓冲接口（契约）
+│   ├── rendering_device_commons.h  # 共享枚举/类型（契约）
+│   └── gl/                 # OpenGL 驱动实现
 │       ├── rendering_context_driver_gl.h/.cpp
 │       ├── rendering_device_driver_gl.h/.cpp
 │       └── command_buffer_gl.h/.cpp
 │
-└── app/                    # 应用层
-    ├── CMakeLists.txt      # demo 构建（可选，需 -DARHUD_BUILD_DEMO=ON）
-    └── main.cpp            # 最小可运行 demo
+├── servers/                # 服务器层
+│   └── rendering/          # RD / 命令链 / 保留模式 / 多屏
+│       ├── rendering_device.h/.cpp      # RD 实现
+│       ├── command_queue.h/.cpp         # SPSC 命令队列（主→渲染线程）
+│       ├── command_executor.h/.cpp      # 渲染线程命令执行
+│       ├── render_commands.h            # 命令词汇表
+│       ├── render_server.h/.cpp         # 主线程 API 代理（app 唯一入口）
+│       ├── render_viewport.h/.cpp         # 单屏视口（FBO + 后处理）
+│       ├── arhud_engine.h/.cpp          # 引擎入口（PIMPL）
+│       ├── present_thread.h / frame_image_queue.h  # 每屏上屏 + 帧队列
+│       ├── storage/                     # 资源存储 + item_storage（保留模式）
+│       └── renderer/                    # Canvas/Spatial/Compositor + shaders/
+│
+└── app/                    # 应用层（5 个分阶段 demo）
+    ├── CMakeLists.txt
+    ├── phase2_rdc_rdd_rd/main.cpp
+    ├── phase4_canvas/main.cpp
+    ├── phase4_spatial/main.cpp
+    ├── phase4_compositor/main.cpp
+    └── phase4_text/main.cpp
 ```
 
 ---
@@ -215,9 +226,9 @@ ar_hud/
 |------|--------|------|
 | `ARHUD_API_OPENGL` | ON | 启用 OpenGL 后端 |
 | `ARHUD_API_VULKAN` | OFF | 启用 Vulkan 后端（预留） |
-| `ARHUD_BUILD_TESTS` | OFF | 构建单元测试 |
+| `ARHUD_BUILD_TESTS` | ON | 构建单元测试（Conan 工具链会缓存首次配置值，见 `docs/process/verification.md` 坑 #1） |
 | `ARHUD_BUILD_TOOLS` | OFF | 构建开发工具 |
-| `ARHUD_BUILD_DEMO` | OFF | 构建 demo 可执行文件（需 glad） |
+| `ARHUD_BUILD_DEMO` | ON | 构建 demo 可执行文件（需 glad） |
 | `ARHUD_ENABLE_CXX20` | OFF | 使用 C++20 替代 C++17 |
 | `BUILD_SHARED_LIBS` | OFF | 构建动态库 |
 

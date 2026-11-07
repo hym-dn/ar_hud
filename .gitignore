@@ -1,0 +1,11 @@
+# 构建产物
+build/
+
+# Conan 本地缓存（CONAN_HOME 指在仓库内，属环境而非工程内容）
+.conan/
+
+# conan install 每台机器再生的用户预设（已从版本控制移除）
+CMakeUserPresets.json
+
+# demo 运行时 shader 缓存（可整目录删除，见 AGENTS.md 风险#3）
+shader_cache/

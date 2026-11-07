@@ -1,0 +1,29 @@
+# ARHud — Google C++ Style（原教口径）格式配置
+# 裁决与迁移规则见 docs/skill/arhud-coding-style/SKILL.md
+# 用法：clang-format -i <file> ；CI：clang-format --dry-run --Werror <file>
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++17   # 拼法须小写；clang-format >=21 亦接受 Latest
+
+# ---- 显式钉死 SKILL.md §1.1 的 G1~G5 裁决（多数已是 Google 默认，写明防漂移） ----
+ColumnLimit: 80            # G5 行宽
+IndentWidth: 2             # G1 缩进步进
+TabWidth: 4
+UseTab: Never              # 只用空格
+NamespaceIndentation: None # G2 namespace 体不缩进
+BreakBeforeBraces: Attach  # G3 大括号一律附尾（含类/函数/namespace）
+PointerAlignment: Left     # G4 Type* p（符号紧贴类型）
+DerivePointerAlignment: false
+AccessModifierOffset: -1   # 访问标号缩进 1 空格，成员正常 2
+IndentCaseLabels: true     # switch case 标签缩进 2
+IndentPPDirectives: None   # 预处理指令顶格
+
+# ---- include 分组：关联头→C→C++→第三方→工程（SKILL.md §2） ----
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+
+# ---- 与工程实践的低摩擦项 ----
+AllowShortFunctionsOnASingleLine: Empty   # 仅空函数体可并排（~MyClass() {} 合规）
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+MaxEmptyLinesToKeep: 1

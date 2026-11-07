@@ -399,6 +399,15 @@ bool RenderViewport::ApplyPendingResize() {
     return false;
   }
 
+  // 1b. 后处理输出 FBO 必须跟随屏幕尺寸；失败降级为无后处理。
+  if (post_buffers_.IsValid() &&
+      post_buffers_.Recreate(rd_, new_w, new_h) != Error::kOK) {
+    post_process_enabled_ = false;
+    ARHUD_LOG_WARN(
+        "RenderViewport post-process disabled after resize (post_buffers_ "
+        "recreate failed)");
+  }
+
   // 2. 重建帧图像队列（尺寸随屏；无在途帧，present 线程阻塞于
   // AcquireReady，安全）
   queue_->Resize(new_w, new_h);
@@ -461,8 +470,13 @@ void RenderViewport::RenderAndSubmit() {
   // 4. Render scene to FBO (same-thread read of ItemStorage)
   RenderFromStorage();
 
-  // 5. Readback FBO → CPU slot
-  rd_->FramebufferReadback(scene_buffers_.framebuffer, 0, 0, width_, height_,
+  // 5. Readback FBO → CPU slot (post-process enabled: composite output;
+  // otherwise read the scene FBO directly).
+  const RDFramebufferID readback_fb =
+      (post_process_enabled_ && post_buffers_.IsValid())
+          ? post_buffers_.framebuffer
+          : scene_buffers_.framebuffer;
+  rd_->FramebufferReadback(readback_fb, 0, 0, width_, height_,
                            queue_->GetPixels(slot));
 
   // 6. Mark READY (wakes present thread)
@@ -483,6 +497,16 @@ Error RenderViewport::InitializePostProcess() {
         "kFailed",
         "RenderViewport::InitializePostProcess() RenderBuffers::Create failed");
     return Error::kFailed;
+  }
+
+  // Post-process output FBO (composite target). Failure only downgrades to
+  // "no post-process": readback falls back to the scene FBO.
+  if (post_buffers_.Create(rd_, width_, height_) != Error::kOK) {
+    ARHUD_LOG_WARN(
+        "RenderViewport::InitializePostProcess() post_buffers_ create failed; "
+        "post-process disabled");
+    post_process_enabled_ = false;
+    return Error::kOK;
   }
 
   // ── 以下为 composite pipeline（可选，失败不影响 scene_buffers_）──
@@ -588,7 +612,7 @@ Error RenderViewport::InitializePostProcess() {
     composite_pipeline_id_ = rd_->RenderPipelineCreate(
         composite_shader_rd_id_, composite_vertex_format_id_,
         RenderPrimitive::kTriangles, raster, multisample, depth_stencil, blend,
-        BitField<PipelineDynamicStateFlags>(), rd_->GetDefaultRenderPass());
+        BitField<PipelineDynamicStateFlags>(), post_buffers_.render_pass);
   }
 
   if (!composite_pipeline_id_.IsValid()) {
@@ -695,6 +719,7 @@ fail_pipeline:
     rd_->UniformSetFree(composite_set_);
     composite_set_ = RDUniformSetID();
   }
+  post_buffers_.Destroy(rd_);
   post_process_enabled_ = false;
   ARHUD_LOG_WARN(
       "RenderViewport post-process disabled (composite pipeline failed), scene "
@@ -776,6 +801,7 @@ void RenderViewport::FinalizePostProcess() {
 
   // B3-M0.3: scene_buffers_ 始终创建（回读必需），此处始终销毁
   scene_buffers_.Destroy(rd_);
+  post_buffers_.Destroy(rd_);
 }
 
 void RenderViewport::RenderPostProcess(uint32 p_screen_width,
@@ -790,7 +816,13 @@ void RenderViewport::RenderPostProcess(uint32 p_screen_width,
   rd_->BufferUpdate(composite_params_ubo_, 0, sizeof(params), params);
 
   float clear_color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-  DrawListScope scope(rd_, rd_->GetDefaultFramebuffer(), true, false, false,
+  // Composite output goes to the post-process FBO. The default framebuffer is
+  // the hidden offscreen window surface (100x100) and nobody reads it back
+  // in Mode R — drawing there silently discards the result.
+  if (!post_buffers_.IsValid()) {
+    return;
+  }
+  DrawListScope scope(rd_, post_buffers_.framebuffer, true, false, false,
                       clear_color);
   DrawListID dl = scope.Get();
 

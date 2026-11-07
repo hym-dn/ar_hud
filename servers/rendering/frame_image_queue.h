@@ -112,9 +112,13 @@ class FrameImageQueue {
     uint32 prev_ready =
         ready_index_.exchange(p_slot, std::memory_order_acq_rel);
     slots_[p_slot].state.store(SlotState::kReady, std::memory_order_release);
-    if (prev_ready < kSlotCount) {
+    if (prev_ready < kSlotCount && prev_ready != p_slot) {
       // Overwrite: previous ready slot is superseded.
       // This shouldn't happen with HasInFlight guard, but handle gracefully.
+      // NOTE: prev_ready == p_slot is impossible now that AcquireReady clears
+      // ready_index_ on consume; the guard keeps a stale self-reference from
+      // ever demoting the slot we just marked READY (that used to silently
+      // cancel every frame and starve the present thread).
       slots_[prev_ready].state.store(SlotState::kFree,
                                      std::memory_order_release);
       free_sem_.Post();  // wake render thread (freed a slot)
@@ -150,6 +154,14 @@ class FrameImageQueue {
     SlotState expected = SlotState::kReady;
     if (slots_[idx].state.compare_exchange_strong(
             expected, SlotState::kCommitted, std::memory_order_acq_rel)) {
+      // Consume the index: without this clear, ready_index_ keeps pointing
+      // at this slot after Release and the next MarkReady on the same slot
+      // demotes itself (stale self-reference) — the present thread then
+      // starves while the render thread spins. Only clear if no newer
+      // MarkReady has already replaced it.
+      uint32 expect_idx = idx;
+      ready_index_.compare_exchange_strong(expect_idx, UINT32_MAX,
+                                           std::memory_order_acq_rel);
       return idx;
     }
     // CAS failed (rare race) — try again

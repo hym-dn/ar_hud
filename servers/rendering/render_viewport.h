@@ -262,6 +262,10 @@ class RenderViewport {
 
   bool post_process_enabled_ = false;
   RenderBuffers scene_buffers_;
+  // Post-process output FBO: the composite pass renders here and the CPU
+  // readback samples from here. In Mode R the default framebuffer is the
+  // hidden 100x100 offscreen window and must never be the presented source.
+  RenderBuffers post_buffers_;
   RID composite_shader_rid_;
   RDShaderID composite_shader_rd_id_;
   RDVertexFormatID composite_vertex_format_id_;

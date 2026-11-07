@@ -12,10 +12,11 @@
  * @ingroup core
  */
 
-#pragma once
+#ifndef ARHUD_CORE_TYPEDEFS_H_
+#define ARHUD_CORE_TYPEDEFS_H_
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 
 // ═══════════════════════════════════════════════════════════════════════
 // 平台检测
@@ -157,18 +158,18 @@
 // 基础类型别名
 // ═══════════════════════════════════════════════════════════════════════
 
-using uint8 = uint8_t;   ///< 8-bit  无符号整数
-using uint16 = uint16_t; ///< 16-bit 无符号整数
-using uint32 = uint32_t; ///< 32-bit 无符号整数
-using uint64 = uint64_t; ///< 64-bit 无符号整数
+using uint8 = uint8_t;    ///< 8-bit  无符号整数
+using uint16 = uint16_t;  ///< 16-bit 无符号整数
+using uint32 = uint32_t;  ///< 32-bit 无符号整数
+using uint64 = uint64_t;  ///< 64-bit 无符号整数
 
-using int8 = int8_t;   ///< 8-bit  有符号整数
-using int16 = int16_t; ///< 16-bit 有符号整数
-using int32 = int32_t; ///< 32-bit 有符号整数
-using int64 = int64_t; ///< 64-bit 有符号整数
+using int8 = int8_t;    ///< 8-bit  有符号整数
+using int16 = int16_t;  ///< 16-bit 有符号整数
+using int32 = int32_t;  ///< 32-bit 有符号整数
+using int64 = int64_t;  ///< 64-bit 有符号整数
 
-using float32 = float;  ///< 32-bit 单精度浮点数
-using float64 = double; ///< 64-bit 双精度浮点数
+using float32 = float;   ///< 32-bit 单精度浮点数
+using float64 = double;  ///< 64-bit 双精度浮点数
 
 // ═══════════════════════════════════════════════════════════════════════
 // 错误码
@@ -180,22 +181,21 @@ using float64 = double; ///< 64-bit 双精度浮点数
  * 参考 Godot core/error/error_list.h 设计，仅保留引擎所需子集。
  * 所有返回 Error 的函数在成功时返回 Error::kOK。
  */
-enum class Error : int32
-{
-    kOK = 0,              ///< 成功
-    kFailed,              ///< 通用失败
-    kUnavailable,         ///< 资源/功能不可用
-    kUnconfigured,        ///< 未配置
-    kUnauthorized,        ///< 未授权
-    kParameterRangeError, ///< 参数越界
-    kOutOfMemory,         ///< 内存不足
-    kBusy,                ///< 资源忙
-    kLocked,              ///< 资源已锁定
-    kTimeout,             ///< 超时
-    kCantConnect,         ///< 无法连接
-    kAlreadyExists,       ///< 已存在
-    kDoesNotExist,        ///< 不存在
-    kInvalidParameter,    ///< 无效参数
+enum class Error : int32 {
+  kOK = 0,               ///< 成功
+  kFailed,               ///< 通用失败
+  kUnavailable,          ///< 资源/功能不可用
+  kUnconfigured,         ///< 未配置
+  kUnauthorized,         ///< 未授权
+  kParameterRangeError,  ///< 参数越界
+  kOutOfMemory,          ///< 内存不足
+  kBusy,                 ///< 资源忙
+  kLocked,               ///< 资源已锁定
+  kTimeout,              ///< 超时
+  kCantConnect,          ///< 无法连接
+  kAlreadyExists,        ///< 已存在
+  kDoesNotExist,         ///< 不存在
+  kInvalidParameter,     ///< 无效参数
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -208,9 +208,9 @@ enum class Error : int32
  *
  * @param m_class 类名
  */
-#define ARHUD_DISABLE_COPY(m_class)    \
-    m_class(const m_class &) = delete; \
-    m_class &operator=(const m_class &) = delete
+#define ARHUD_DISABLE_COPY(m_class) \
+  m_class(const m_class&) = delete; \
+  m_class& operator=(const m_class&) = delete
 
 /**
  * @def ARHUD_DISABLE_MOVE
@@ -219,8 +219,8 @@ enum class Error : int32
  * @param m_class 类名
  */
 #define ARHUD_DISABLE_MOVE(m_class) \
-    m_class(m_class &&) = delete;   \
-    m_class &operator=(m_class &&) = delete
+  m_class(m_class&&) = delete;      \
+  m_class& operator=(m_class&&) = delete
 
 /**
  * @def ARHUD_DISABLE_COPY_MOVE
@@ -229,8 +229,8 @@ enum class Error : int32
  * @param m_class 类名
  */
 #define ARHUD_DISABLE_COPY_MOVE(m_class) \
-    ARHUD_DISABLE_COPY(m_class);         \
-    ARHUD_DISABLE_MOVE(m_class)
+  ARHUD_DISABLE_COPY(m_class);           \
+  ARHUD_DISABLE_MOVE(m_class)
 
 /**
  * @def ARHUD_ASSERT
@@ -250,43 +250,43 @@ enum class Error : int32
  * @param msg  断言消息字符串
  */
 
-namespace arhud
-{
+namespace arhud {
 
-    /**
-     * @brief 断言失败处理函数
-     *
-     * 由 ARHUD_ASSERT 宏调用，通过日志系统输出断言信息后 abort。
-     * 声明在 typedefs.h 中（避免 logger.h 循环依赖），实现在 logger.cpp 中。
-     *
-     * @param[in] p_cond 断言条件字符串
-     * @param[in] p_msg  断言消息
-     */
-    void AssertFailed(const char *p_cond, const char *p_msg);
+/**
+ * @brief 断言失败处理函数
+ *
+ * 由 ARHUD_ASSERT 宏调用，通过日志系统输出断言信息后 abort。
+ * 声明在 typedefs.h 中（避免 logger.h 循环依赖），实现在 logger.cpp 中。
+ *
+ * @param[in] p_cond 断言条件字符串
+ * @param[in] p_msg  断言消息
+ * @param[in] p_file 断言触发的源文件（由宏透传 __FILE__）
+ * @param[in] p_line 断言触发的行号（由宏透传 __LINE__）
+ */
+void AssertFailed(const char* p_cond, const char* p_msg, const char* p_file,
+                  int32 p_line);
 
-} // namespace arhud
+}  // namespace arhud
 
 #if ARHUD_DEBUG
-#define ARHUD_ASSERT_IMPL(cond, ...)          \
-    do                              \
-    {                               \
-        if (!(cond))                \
-        {                           \
-            *(volatile int *)0 = 0; \
-        }                           \
-    } while (0)
+#define ARHUD_ASSERT_IMPL(cond, ...) \
+  do {                               \
+    if (!(cond)) {                   \
+      *(volatile int*)0 = 0;         \
+    }                                \
+  } while (0)
 
-#define ARHUD_ASSERT_MSG_IMPL(cond, msg)                                  \
-    do                                                                \
-    {                                                                 \
-        if (!(cond))                                                  \
-        {                                                             \
-            ::arhud::AssertFailed(#cond, msg);                        \
-        }                                                             \
-    } while (0)
+#define ARHUD_ASSERT_MSG_IMPL(cond, msg)                     \
+  do {                                                       \
+    if (!(cond)) {                                           \
+      ::arhud::AssertFailed(#cond, msg, __FILE__, __LINE__); \
+    }                                                        \
+  } while (0)
 
 #define ARHUD_ASSERT_GET_MACRO(_1, _2, NAME, ...) NAME
-#define ARHUD_ASSERT(...) ARHUD_ASSERT_GET_MACRO(__VA_ARGS__, ARHUD_ASSERT_MSG_IMPL, ARHUD_ASSERT_IMPL)(__VA_ARGS__)
+#define ARHUD_ASSERT(...)                                    \
+  ARHUD_ASSERT_GET_MACRO(__VA_ARGS__, ARHUD_ASSERT_MSG_IMPL, \
+                         ARHUD_ASSERT_IMPL)(__VA_ARGS__)
 #else
 #define ARHUD_ASSERT(...) ((void)0)
 #endif
@@ -337,9 +337,9 @@ namespace arhud
  * 其他平台使用标准 main。
  */
 #ifdef ARHUD_PLATFORM_WINDOWS
-#define ARHUD_MAIN() \
-    int __stdcall WinMain(void *, void *, char *, int)
+#define ARHUD_MAIN() int __stdcall WinMain(void*, void*, char*, int)
 #else
-#define ARHUD_MAIN() \
-    int main(int, char **)
+#define ARHUD_MAIN() int main(int, char**)
 #endif
+
+#endif  // ARHUD_CORE_TYPEDEFS_H_

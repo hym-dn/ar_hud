@@ -20,7 +20,9 @@ Windows + OpenGL（MSVC，静态库），Conan 2.x 管依赖。主线程发命�
     （替换 S0 裸指针过渡签名）。
   - ☐ 未开始：S2 RSG 全局、S3 Storage 更名、S4 ItemStorage 拆分、S5 TextServer、S6 RendererViewport、S7 收口。
 - 旧实现 `render_server.*` 与门面**并存**是绞杀者过渡态，勿提前删除；删除判定：`grep -r "render_server_\."` 无命中。
-- git 工作区含大量未提交变更（迁移期新文件多为 untracked），动手前先 `git status` 确认。
+- 迁移代码（S0/S1 产物）与**全库 Google 原教风格重排**已于 2026-11-07 入库（含旧布局 21 件删除落库）；
+  工作区仅余文档归档件（`_archive/` untracked、旧 `.md` 4 件待删）与构建脚本/CMake/conanfile 等非源码变更，
+  动手前先 `git status` 确认。
 
 ## 2. 分层与依赖规则
 

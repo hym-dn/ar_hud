@@ -197,18 +197,21 @@ Error MeshStorage::MeshInitializeQuad(RID p_mesh,
   uint16 indices[6] = {0, 1, 2, 0, 2, 3};
 
   info->name = p_name ? UString(p_name) : UString();
+  // Mark the shell valid before the internal MeshAddSurface() call: its guard
+  // rejects uninitialized shells (RID-split contract, architecture.md §7.11 F).
+  info->is_valid = true;
   uint32 surf_idx =
       MeshAddSurface(p_mesh, vertices, 4, kVertex2DStride, indices, 6,
                      IndexBufferFormat::kUint16, RenderPrimitive::kTriangles);
 
   if (surf_idx == kInvalidSurfaceIndex) {
+    info->is_valid = false;
     return Error::kFailed;
   }
 
   SurfaceInfo* surf = mesh_owner_.GetOrNull(p_mesh)->surfaces[surf_idx];
   surf->aabb = AABB(0.0f, 0.0f, 0.0f, p_params.width, p_params.height, 0.0f);
   info->aabb = AABB(0.0f, 0.0f, 0.0f, p_params.width, p_params.height, 0.0f);
-  info->is_valid = true;
   return Error::kOK;
 }
 
@@ -281,18 +284,19 @@ Error MeshStorage::MeshInitializeBox(RID p_mesh,
   };
 
   info->name = p_name ? UString(p_name) : UString();
+  info->is_valid = true;  // See MeshInitializeQuad: guard ordering note.
   uint32 surf_idx =
       MeshAddSurface(p_mesh, vertices, 24, kVertex3DStride, indices, 36,
                      IndexBufferFormat::kUint16, RenderPrimitive::kTriangles);
 
   if (surf_idx == kInvalidSurfaceIndex) {
+    info->is_valid = false;
     return Error::kFailed;
   }
 
   AABB box_aabb(-hw, -hh, -hd, p_params.width, p_params.height, p_params.depth);
   mesh_owner_.GetOrNull(p_mesh)->surfaces[surf_idx]->aabb = box_aabb;
   info->aabb = box_aabb;
-  info->is_valid = true;
   return Error::kOK;
 }
 
@@ -380,6 +384,7 @@ Error MeshStorage::MeshInitializeSphere(RID p_mesh,
   }
 
   info->name = p_name ? UString(p_name) : UString();
+  info->is_valid = true;  // See MeshInitializeQuad: guard ordering note.
   uint32 surf_idx = MeshAddSurface(
       p_mesh, vertices, vertex_count, kVertex3DStride, indices, index_count,
       IndexBufferFormat::kUint16, RenderPrimitive::kTriangles);
@@ -388,6 +393,7 @@ Error MeshStorage::MeshInitializeSphere(RID p_mesh,
   ARHUD_DELETE_ARR(indices, uint16);
 
   if (surf_idx == kInvalidSurfaceIndex) {
+    info->is_valid = false;
     return Error::kFailed;
   }
 
@@ -396,7 +402,6 @@ Error MeshStorage::MeshInitializeSphere(RID p_mesh,
                    2.0f * p_params.radius);
   mesh_owner_.GetOrNull(p_mesh)->surfaces[surf_idx]->aabb = sphere_aabb;
   info->aabb = sphere_aabb;
-  info->is_valid = true;
   return Error::kOK;
 }
 

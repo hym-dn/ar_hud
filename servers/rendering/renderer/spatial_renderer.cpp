@@ -101,7 +101,7 @@ Error SpatialRenderer::Initialize(RenderingDevice* p_rd,
   uniforms[0].stages = BitField<ShaderStage>(ShaderStage::kVertex);
   uniforms[0].length = 0;
   uniforms[0].size = 128;
-  uniforms[0].name = nullptr;
+  uniforms[0].name = "CameraBlock";
 
   uniforms[1].type = UniformType::kSamplerWithTexture;
   uniforms[1].writable = false;
@@ -117,7 +117,7 @@ Error SpatialRenderer::Initialize(RenderingDevice* p_rd,
   uniforms[2].stages = BitField<ShaderStage>(ShaderStage::kFragment);
   uniforms[2].length = 0;
   uniforms[2].size = 4;
-  uniforms[2].name = nullptr;
+  uniforms[2].name = "MaterialBlock";
 
   uniforms[3].type = UniformType::kUniformBuffer;
   uniforms[3].writable = false;
@@ -125,7 +125,7 @@ Error SpatialRenderer::Initialize(RenderingDevice* p_rd,
   uniforms[3].stages = BitField<ShaderStage>(ShaderStage::kVertex);
   uniforms[3].length = 0;
   uniforms[3].size = 64;
-  uniforms[3].name = nullptr;
+  uniforms[3].name = "ModelBlock";
 
   uniforms[4].type = UniformType::kUniformBuffer;
   uniforms[4].writable = false;
@@ -133,7 +133,7 @@ Error SpatialRenderer::Initialize(RenderingDevice* p_rd,
   uniforms[4].stages = BitField<ShaderStage>(ShaderStage::kFragment);
   uniforms[4].length = 0;
   uniforms[4].size = 48;
-  uniforms[4].name = nullptr;
+  uniforms[4].name = "LightBlock";
 
   shader_rid_ = shader_storage_->ShaderCreateFromSource("hud_spatial", stages,
                                                         uniforms, 0);
@@ -166,7 +166,10 @@ Error SpatialRenderer::Initialize(RenderingDevice* p_rd,
   PipelineDepthStencilState depth_stencil;
   depth_stencil.enable_depth_test = true;
   depth_stencil.enable_depth_write = true;
-  depth_stencil.depth_compare_operator = CompareOperator::kLess;
+  // LESS_OR_EQUAL, not LESS: with the depth pre-pass the main pass fragments
+  // have bit-identical depth to the pre-pass, and GL_LESS would reject every
+  // fragment (fully culled scene = black screen).
+  depth_stencil.depth_compare_operator = CompareOperator::kLessOrEqual;
 
   PipelineColorBlendState blend = PipelineColorBlendState::CreateBlend(1);
 

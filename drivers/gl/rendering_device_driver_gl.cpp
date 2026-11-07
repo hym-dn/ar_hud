@@ -1945,7 +1945,14 @@ void GLRenderingDeviceDriver::BeginSegment(uint32 p_frame_index,
                                            uint32 p_frames_drawn) {
   frame_index_ = p_frame_index;
   frames_drawn_ = p_frames_drawn;
-  state_cache_.Reset();
+  // NOTE: deliberately NOT calling state_cache_.Reset() here. The render
+  // context persists across segments, so the cache must stay truthful to the
+  // real GL state; resetting it to "defaults" makes the first binds of a
+  // frame skip exactly the states the previous frame's last pipeline changed
+  // (e.g. composite's glDepthMask(GL_FALSE) leaking into the next frame's
+  // prepass depth clear, which glClear masks away -> all fragments fail the
+  // depth test -> black scene). Reset() remains for context (re)creation and
+  // Shutdown only.
 }
 
 /** @brief 结束帧段（当前无驱动级收尾动作；预留对齐 Godot RDD） */

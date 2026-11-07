@@ -105,7 +105,19 @@ void GLRenderingDeviceDriver::CommandBeginRenderPass(
     }
   }
   if (clear_mask != 0) {
+    // glClear's depth component is gated by GL_DEPTH_WRITEMASK: force it on
+    // for the clear (restored afterwards) so a previous depth-write-disabled
+    // pipeline can never swallow a pass depth clear.
+    const bool clear_depth = (clear_mask & GL_DEPTH_BUFFER_BIT) != 0;
+    GLboolean mask_before = GL_TRUE;
+    if (clear_depth) {
+      glGetBooleanv(GL_DEPTH_WRITEMASK, &mask_before);
+      state_cache_.SetDepthWrite(true);
+    }
     glClear(clear_mask);
+    if (clear_depth && mask_before == GL_FALSE) {
+      state_cache_.SetDepthWrite(false);
+    }
     GL_CHECK_ERROR();
   }
 }

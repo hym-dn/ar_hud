@@ -76,11 +76,16 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
   #endif  // ARHUD_SERVERS_RENDERING_COMMAND_QUEUE_H_
   ```
 
-- **包含顺序**（五段，段间空行，段内字典序）：
+- **包含顺序**（五段，段间空行）：
   ① 本文件关联头 → ② C 系统头（`<stdlib.h>` 类，少用）→ ③ C++ 标准库（`<atomic>`…）→
   ④ 第三方（`<glm/glm.hpp>`、`glad/…`…）→ ⑤ 本工程头。
   工程内一律写**相对模块根的路径**（如 `"template/rid.h"`、`"storage/item_storage.h"`），禁止 `./`、`../` 前缀
   （与 `cmake/dir.cmake` 全局 include 机制一致）。
+  > **工具裁决（2026-11-07 实测）**：clang-format 的 `IncludeBlocks: Regroup` + 排序会按字典序重排段内
+  > 头文件，曾把 `<psapi.h>` 排到 `<windows.h>` 之前导致 SDK 编译失败。本工程 `.clang-format` 已设
+  > `SortIncludes: false` + `IncludeBlocks: Preserve`——**五段顺序与段内次序由作者维护**，评审人工把关；
+  > 有先后依赖的 SDK 组合（windows.h 先行）必须在旁加一行英文注释声明。原教对 include 排序无硬数字要求
+  > （仅规定分组），此裁决不违基线。
 - **`.cpp` 内部实现实体**用匿名 namespace 或 `static` 给内部链接；`.h` 中**禁止**。收口注释：
 
   ```cpp
@@ -284,7 +289,7 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 
 - **`.clang-format`（仓库根，已提供）**：`BasedOnStyle: Google` + 逐条钉死 G1–G4/80 列/指针左贴/namespace 零缩进。
   用法：`clang-format -i path/to/file.cpp`（VS 扩展 / clangd 自动读取；CI 可 `--dry-run -Werror`）。
-  clang-format 管不了：`#pragma once`→guard（G6）、`p_`（W1）、注释文体（§7）、声明顺序（§5）——人审兜底。
+  clang-format 管不了：include 段序（排序已禁用，见 §2）、`#pragma once`→guard（G6）、`p_`（W1）、注释文体（§7）、声明顺序（§5）——人审兜底。
 - **cpplint（可选）**：`pip install cpplint; cpplint --filter=...`——对 `.cpp` 扩展、工程宏前缀有已知误报，
   与本 skill 冲突处**以本 skill 为准**。
 - IDE：缩进空格 2/80 列标尺；禁止"制表符"；格式化提交一律独立（§1.3-2）。

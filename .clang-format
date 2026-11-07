@@ -19,8 +19,10 @@ IndentCaseLabels: true     # switch case 标签缩进 2
 IndentPPDirectives: None   # 预处理指令顶格
 
 # ---- include 分组：关联头→C→C++→第三方→工程（SKILL.md §2） ----
-SortIncludes: CaseSensitive
-IncludeBlocks: Regroup
+# 禁用自动排序/重组：实测 Regroup 会把 <psapi.h> 排到 <windows.h> 前导致 SDK 编译失败。
+# 分组顺序由作者维护并保留现状（Preserve），评审时人工把关。
+SortIncludes: false
+IncludeBlocks: Preserve
 
 # ---- 与工程实践的低摩擦项 ----
 AllowShortFunctionsOnASingleLine: Empty   # 仅空函数体可并排（~MyClass() {} 合规）

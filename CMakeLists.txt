@@ -11,11 +11,14 @@
 #
 #   arhud_core      (zero deps)        ← Base types, containers, IO, math
 #       ↑
-#   arhud_servers   (depends on core)  ← Rendering device interfaces + CommandBuffer
+#   arhud_platform  (depends on core)  ← Platform abstraction (Win32)
 #       ↑
-#   arhud_drivers   (depends on core+servers) ← OpenGL driver implementation
+#   arhud_drivers   (depends on core+platform) ← Contracts (RCD/RDD at root) + GL impls (gl/)
 #       ↑
-#   arhud_platform  (depends on core+drivers)  ← Windows platform abstraction
+#   arhud_servers   (core+platform+drivers) ← RD, Storage, RenderServer
+#                    （公共头消费 drivers 根部契约；装配根注入 GL 实现）
+#       ↑
+#   arhud_scene     (depends on core+servers) ← Scene tree (HudScene/HudNode, placeholder)
 #
 # --- Build methods -------------------------------------------------------
 #
@@ -55,13 +58,28 @@ include(cmake/lib.cmake)        # Third-party dependency integration (Conan / fi
 
 # --- Subdirectories ------------------------------------------------------
 # Addition order follows dependency direction:
-#   core (zero deps) -> platform (depends on core) -> servers (depends on core+platform) -> drivers (depends on core+servers+platform)
+#   core -> platform -> drivers (contracts+impls) -> servers -> scene
 add_subdirectory(core)
 add_subdirectory(platform)
-add_subdirectory(servers)
 add_subdirectory(drivers)
+add_subdirectory(servers)
+add_subdirectory(scene)
 
-# Demo executable (optional, needs glad for OpenGL)
-if(ARHUD_BUILD_DEMO)
+# Demo executables (optional, needs glad for OpenGL)
+# Build when any demo option is enabled:
+#   -DARHUD_BUILD_DEMO=ON           (all demos)
+#   -DARHUD_DEMO_PHASE2=ON          (Phase 2 only)
+#   -DARHUD_DEMO_PHASE4=ON          (all Phase 4 demos)
+#   -DARHUD_DEMO_PHASE4_CANVAS=ON    (specific demo)
+if(ARHUD_BUILD_DEMO OR ARHUD_DEMO_PHASE2 OR ARHUD_DEMO_PHASE4
+   OR ARHUD_DEMO_PHASE4_CANVAS OR ARHUD_DEMO_PHASE4_SPATIAL
+   OR ARHUD_DEMO_PHASE4_COMPOSITOR OR ARHUD_DEMO_PHASE4_TEXT)
     add_subdirectory(app)
+endif()
+
+# Unit tests (optional, needs GoogleTest via Conan)
+#   -DARHUD_BUILD_TESTS=ON
+if(ARHUD_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()

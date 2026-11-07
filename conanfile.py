@@ -110,6 +110,8 @@ class ARHudConan(ConanFile):
         # 当前 core 库不依赖 glfw，引擎层在创建窗口时才需要
         if self.options.build_tests:
             self.requires("glfw/3.4", visible=True)
+            # ── GoogleTest（单元测试框架，仅 build_tests） ────────────
+            self.requires("gtest/1.14.0")
         else:
             self.requires("glfw/3.4", visible=False)
 
@@ -118,7 +120,7 @@ class ARHudConan(ConanFile):
 
         self.options["glad"].shared = self.options.shared
         self.options["glad"].gl_profile = "core"
-        self.options["glad"].gl_version = "3.3"
+        self.options["glad"].gl_version = "4.2"
 
     def validate(self):
         """验证选项组合的合法性"""

@@ -31,6 +31,7 @@ REM --- Parse command line arguments ---
 if /i "%1"=="release"   set BUILD_TYPE=Release
 if /i "%1"=="clean"     goto :clean
 if /i "%1"=="conan"     goto :conan_build
+if /i "%1"=="tests"     goto :tests_build
 
 REM ============================================================================
 REM Standard build (no Conan)
@@ -52,7 +53,45 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [ARHud] Build SUCCEEDED
+REM ============================================================================
+REM Tests build (Conan + build_tests=True + ctest)
+REM ============================================================================
+:tests_build
+echo [ARHud] Test build (%BUILD_TYPE%) ??conan + gtest + ctest
+
+where conan >nul 2>nul
+if errorlevel 1 (
+    echo [ARHud] ERROR: conan not found in PATH.
+    echo [ARHud] Install with: pip install conan
+    exit /b 1
+)
+
+conan install . --build=missing -s build_type=%BUILD_TYPE% -o build_tests=True
+if errorlevel 1 (
+    echo [ARHud] Conan install FAILED
+    exit /b 1
+)
+
+cmake --preset conan-default
+if errorlevel 1 (
+    echo [ARHud] CMake preset configuration FAILED
+    exit /b 1
+)
+
+cmake --build build --config %BUILD_TYPE% --parallel
+if errorlevel 1 (
+    echo [ARHud] Build FAILED
+    exit /b 1
+)
+
+echo [ARHud] Running tests...
+ctest --test-dir build --build-config %BUILD_TYPE% --output-on-failure
+if errorlevel 1 (
+    echo [ARHud] Tests FAILED
+    exit /b 1
+)
+
+echo [ARHud] Tests SUCCEEDED
 goto :end
 
 REM ============================================================================
@@ -81,7 +120,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-conan install . --build=missing -s build_type=%BUILD_TYPE%
+conan install . --build=missing -s build_type=%BUILD_TYPE% -o build_tests=True
 if errorlevel 1 (
     echo [ARHud] Conan install FAILED
     exit /b 1

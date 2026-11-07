@@ -96,26 +96,6 @@ if(MSVC)
     #   and not available on Linux/Android/QNX.
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 
-    # Remove default exception handling flags injected by CMake into CMAKE_CXX_FLAGS.
-    # CMake automatically adds /EHsc (synchronous + extern "C" exception handling)
-    # for MSVC targets. Our project disables exceptions (/EHs-), so the two flags
-    # conflict and produce D9025 warning: "overriding /EHsc with /EHs-".
-    # By stripping the default first, our /EHs- becomes the only flag — no conflict.
-    string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-
-    # /EHs-: Disable C++ exceptions (synchronous exception model off)
-    #   Automotive requirement: exception stack unwinding overhead and
-    #   non-determinism are unsuitable for real-time systems
-    #   Effect: throw statements cause compile errors, try/catch syntax errors
-    #   Note: /EHs- is not /EHsc-, the latter also disables extern "C" exception handling
-    add_compile_options(/EHs-)
-
-    # /GR-: Disable RTTI (Run-Time Type Information)
-    #   Automotive requirement: dynamic_cast and typeid have runtime overhead
-    #   Effect: dynamic_cast compile error, typeid unavailable
-    #   Alternative: use virtual functions + enum type tags
-    add_compile_options(/GR-)
-
 else()
     # -- GCC / Clang (Linux / Android / QNX) --
 
@@ -123,12 +103,4 @@ else()
     # -Wextra: Extra warnings (unused parameters, empty function bodies, etc.)
     # -Wpedantic: Strict ISO standard compliance (disable compiler extensions)
     add_compile_options(-Wall -Wextra -Wpedantic)
-
-    # -fno-exceptions: Disable C++ exceptions
-    #   Equivalent to MSVC /EHs-, also doesn't link libstdc++ exception support
-    add_compile_options(-fno-exceptions)
-
-    # -fno-rtti: Disable RTTI
-    #   Equivalent to MSVC /GR-, doesn't generate typeinfo in vtable
-    add_compile_options(-fno-rtti)
 endif()

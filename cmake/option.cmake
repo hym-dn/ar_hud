@@ -40,18 +40,37 @@ option(ARHUD_API_VULKAN "Enable Vulkan rendering backend" OFF)
 # ARHUD_BUILD_TESTS: Build unit tests
 #   ON  -- add tests/ subdirectory, compile gtest test executables
 #   OFF -- do not compile tests (recommended for automotive delivery builds)
-option(ARHUD_BUILD_TESTS   "Build unit tests"   OFF)
+option(ARHUD_BUILD_TESTS   "Build unit tests"   ON)
 
 # ARHUD_BUILD_TOOLS: Build developer tools
 #   ON  -- add tools/ subdirectory (e.g. shader compiler, resource packer)
 #   OFF -- do not compile tools
 option(ARHUD_BUILD_TOOLS   "Build developer tools" OFF)
 
-# ARHUD_BUILD_DEMO: Build the minimal demo executable
-#   ON  -- add app/ subdirectory, compile arhud_demo
-#   OFF -- do not compile demo (recommended for automotive delivery builds)
+# ARHUD_BUILD_DEMO: Build all demo executables
+#   ON  -- add app/ subdirectory, compile all demos
+#   OFF -- do not compile demos (recommended for automotive delivery builds)
 #   Note: requires glad (Conan or system install) when ARHUD_API_OPENGL=ON
-option(ARHUD_BUILD_DEMO   "Build demo executable" OFF)
+#   Fine-grained control: -DARHUD_DEMO_PHASE2=ON -DARHUD_DEMO_PHASE4=ON etc.
+option(ARHUD_BUILD_DEMO   "Build all demo executables" ON)
+
+# ARHUD_DEMO_PHASE2: Build Phase 2 demo (RCD/RDD/RD pipeline validation)
+option(ARHUD_DEMO_PHASE2  "Build Phase 2 demo" ON)
+
+# ARHUD_DEMO_PHASE4: Build all Phase 4 demos (Canvas/Spatial/Compositor/Text)
+option(ARHUD_DEMO_PHASE4  "Build Phase 4 demos" ON)
+
+# ARHUD_DEMO_PHASE4_CANVAS: Build Phase 4 Canvas demo (2D rendering)
+option(ARHUD_DEMO_PHASE4_CANVAS "Build Phase 4 Canvas demo" ON)
+
+# ARHUD_DEMO_PHASE4_SPATIAL: Build Phase 4 Spatial demo (3D rendering)
+option(ARHUD_DEMO_PHASE4_SPATIAL "Build Phase 4 Spatial demo" ON)
+
+# ARHUD_DEMO_PHASE4_COMPOSITOR: Build Phase 4 Compositor demo (2D/3D mixed)
+option(ARHUD_DEMO_PHASE4_COMPOSITOR "Build Phase 4 Compositor demo" ON)
+
+# ARHUD_DEMO_PHASE4_TEXT: Build Phase 4 Text demo (SDF rendering, needs FreeType)
+option(ARHUD_DEMO_PHASE4_TEXT "Build Phase 4 Text demo" ON)
 
 # --- C++ language standard -----------------------------------------------
 # C++17 is the default (if constexpr / std::optional / structured bindings).

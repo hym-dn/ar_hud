@@ -27,10 +27,8 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/core/template
     ${CMAKE_CURRENT_SOURCE_DIR}/core/string
     ${CMAKE_CURRENT_SOURCE_DIR}/core/math
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/platform     # Platform abstraction interfaces (window, screen, display_server)
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/platform/windows  # Win32 platform implementations
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/rendering/driver  # Rendering device driver shared definitions
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/rendering/driver/gl  # OpenGL rendering driver implementations
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform          # Platform abstraction interfaces (window, screen, display_server, gl_context_manager)
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/windows  # Win32 platform implementations
 )
 
 # --- Build artifact output directories -----------------------------------

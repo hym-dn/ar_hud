@@ -31,11 +31,12 @@ set(CORE_SOURCES
     io/logger.cpp                          # Logger system implementation (StdLogger, CompositeLogger, global API)
     io/logger_file.cpp                     # FileLogger implementation (async ring buffer + writer thread + rotation)
     string/ustring.cpp                     # String class implementation (UTF-32 string, UTF-8 conversion, operations)
+    math/camera_matrix.cpp                 # CameraMatrix implementation (3D projection + view matrix, ex-Camera3D)
 )
 
 # --- Header file list ----------------------------------------------------
 set(CORE_HEADERS
-    typedefs.h                             # Base type aliases (u8/u32/f32 etc.), platform macros, assert macros, Error enum
+    typedefs.h                             # Base type aliases (uint8/uint32/float32 etc.), platform macros, assert macros, Error enum
     os/memory.h                            # Memory allocator interface, MemoryStats, ARHUD_NEW/DELETE macros
     template/safe_refcount.h               # Atomic primitives (CpuPause, SafeNumeric<T>, SafeFlag)
     os/sync.h                              # Sync primitives (SpinLock + Guard, Mutex, MutexLock, Semaphore, RWLock)
@@ -49,12 +50,15 @@ set(CORE_HEADERS
     template/bitfield.h                    # BitField<E> (type-safe bitwise flags wrapper for enum class)
     template/list.h                        # List<T> (doubly-linked list, Element-as-iterator, delayed Data allocation)
     template/fixed_vector.h                # FixedVector<T,N> (stack-allocated fixed-capacity vector, zero heap alloc)
-    template/ring_buffer.h                 # RingBuffer<T> (power-of-2 FIFO ring buffer, bitmask wrapping)
     template/vector_view.h                 # VectorView<T> (non-owning read-only memory view, like std::span)
     template/rid.h                         # RID (opaque resource ID), RIDOwner<T>, DEFINE_ID macro
+    template/ref_counted.h                 # RefCounted (reference counting base class for Ref<T>)
+    template/ref.h                         # Ref<T> (reference-counted smart pointer, 8 bytes)
+    template/weak_ref.h                    # WeakRef<T> (weak reference for breaking circular references)
     string/ustring.h                       # String (UTF-32 string, LocalVector-based, UTF-8 conversion)
     math/math_funcs.h                      # Math library (Vec2/Vec3/Vec4/Mat4/Rect/Color/Transform2D)
     math/glm_types.h                       # GLM integration (type aliases, arhud↔glm conversion, SIMD math)
+    math/camera_matrix.h                   # CameraMatrix (3D projection + view matrix, ex-Camera3D)
 )
 
 # --- Library target definition -------------------------------------------

@@ -13,15 +13,11 @@ description: "ARHud 渲染引擎代码设计唯一事实源：六层分层与依
 > 参考源码：Godot 4.6（`servers/rendering` 等）。编码风格 = Google C++ Style 原教，
 > 见 `docs/skill/arhud-coding-style/SKILL.md`（全库格式迁移已于 2026-11-07 完成）。
 
-## 0a. 当前进展快照（2026-11-08）
+## 0a. 进展指针
 
-- ✅ 绞杀者迁移：S0 门面 + S1 命令层（`PushBound/PushBoundBlob`、H1 `*CreateParams` param struct
-  已落地；`Ref<Buffer>` 参数体系未做，纹理/字体像素仍走裸指针+size 过渡签名）；
-- ✅ 全库 Google 原教风格迁移（110 源文件，clang-format 幂等，guard 统一）；
-- ✅ **五路 demo 端到端出图验证通过**（phase2/canvas/spatial/compositor/text，2026-11-08），
-  期间修复的渲染链路缺陷均已入库（mesh is_valid 时序、FrameImageQueue ready_index 自覆盖、
-  post-process 输出 FBO、UBO block binding 名、绕序/LEQUAL、状态缓存谎报、dirty 逐屏消费）；
-- ⏳ 未开始：S2 RSG 全局、S3 Storage 更名、S4 ItemStorage 拆分、S5 TextServer、S6 RendererViewport、S7 收口。
+> 进度不在本文维护。当前位置、短/中/长期计划与完成历史见 **`docs/skill/arhud-progress/SKILL.md`**
+> （唯一动态账本）。本文 §7.12 只定义阶段内容与验收标准；两者冲突时，阶段定义以本文为准、
+> 进度状态以 progress skill 为准。
 
 ---
 

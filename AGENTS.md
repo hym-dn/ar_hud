@@ -1,7 +1,8 @@
 # AGENTS.md — ARHud 渲染引擎（AI 上手指南）
 
-> 单一事实源：`docs/skill/arhud-design/SKILL.md`（现状✅ + 目标🎯 + 冻结规格，唯一代码设计文档）。
-> 本文只做浓缩与导航，不重复细节；两者冲突以设计 skill 为准。
+> 单一事实源：`docs/skill/arhud-design/SKILL.md`（现状✅ + 目标🎯 + 冻结规格，唯一代码设计文档）；
+> 进度唯一账本：`docs/skill/arhud-progress/SKILL.md`。本文只做浓缩与导航，不重复细节；
+> 两者冲突以设计 skill 为准。
 > **改代码涉及架构 / 接口冻结面时，必须先回改该文档再动代码**（§7.11 冻结门槛）。
 > 旧文档体系（ADR/devlog/process/设计 skill 旧版）已删除；历史完整保留在 git（≤`c5ac51e` 前任意提交）。
 
@@ -10,19 +11,15 @@
 面向车载 AR-HUD 的 C++17 渲染引擎，架构对标 **Godot 4.6 `servers/rendering`**；
 Windows + OpenGL（MSVC，静态库），Conan 2.x 管依赖。主线程发命令 / 渲染线程执行 / 每屏上屏线程零 GL 呈现（Route B）。
 
-## 1. 工程现状（2026-11 快照）
+## 1. 工程现状
 
-- **Godot 对齐迁移（绞杀者计划 S0→S7，见设计 skill §7.12）进行中**：
-  - ✅ S1-M1~M3：命令层已收敛为绑定调用 `CommandQueue::PushBound/PushBoundBlob`；
-    `RenderCommandType`/33 个命令结构体/`CommandExecutor`/多态 `ICommandBuffer` 录制层**均已删除**。
-  - ✅ S0：新门面 `rendering_server.h`（抽象 API）+ `rendering_server_default.*`（**内部委托旧 `RenderServer`**；
-    `Init/Finish/Draw/Sync/HasChanged/FreeRid` 为 stage-gated 占位，待 S1 接管）。
-  - ⏳ S1 收尾（当前任务）：H1 `*CreateParams` param struct **已落地**；余 `Ref<Buffer>` 参数体系落地
-    （替换现裸指针+size 过渡签名——跨线程安全已由 blob 同步拷贝保证，属类型美化非正确性）。
-  - ☐ 未开始：S2 RSG 全局、S3 Storage 更名、S4 ItemStorage 拆分、S5 TextServer、S6 RendererViewport、S7 收口。
-- 旧实现 `render_server.*` 与门面**并存**是绞杀者过渡态，勿提前删除；删除判定：`grep -r "render_server_\."` 无命中。
-- 迁移代码、**全库 Google 原教风格重排**、渲染链路修复（五路 demo 端到端出图验证，2026-11-08）均已提交并推送；
-  工作区常态应为 clean，动手前 `git status` 确认即可。
+- **进度不在本文维护**——当前位置、计划与完成历史见 `docs/skill/arhud-progress/SKILL.md`（唯一动态账本）。
+  一句话现状（2026-11-08）：S0 + S1 大部 ✅、全库风格迁移 ✅、五路 demo 端到端出图 ✅，
+  处于 S1 收尾（`Ref<Buffer>` 参数体系）→ S2（RSG）交界。
+- **Godot 对齐迁移（绞杀者计划 S0→S7，见设计 skill §7.12）进行中**；
+  旧实现 `render_server.*` 与门面**并存**是绞杀者过渡态，勿提前删除；
+  删除判定：`grep -r "render_server_\."` 无命中。
+- 工作区常态应为 clean（迁移/风格/修复批次均已提交推送），动手前 `git status` 确认即可。
 
 ## 2. 分层与依赖规则
 
@@ -124,9 +121,11 @@ ctest --test-dir build -C Debug            :: 3 个测试须全绿
 
 | 想知道 | 去哪看 |
 |---|---|
-| 架构现状/目标/偏离/迁移阶段 | `docs/skill/arhud-design/SKILL.md`（§1 分层、§7 servers、§7.12 阶段表、§7.11 冻结规格） |
+| 架构现状/目标/偏离/阶段定义 | `docs/skill/arhud-design/SKILL.md`（§1 分层、§7 servers、§7.12 阶段表、§7.11 冻结规格） |
+| **当前进展 / 下一步 / 完成历史 / 计划** | `docs/skill/arhud-progress/SKILL.md`（唯一动态账本） |
 | 编码风格约束（Google 原教裁决、存量迁移、clang-format） | `docs/skill/arhud-coding-style/SKILL.md` + 根 `.clang-format` |
 | 历史 ADR（0001 Route B ~ 0010）/ devlog / 流程 / 旧设计 skill | git 历史（提交 `61eb290` 的 `_archive/`，其后已删除；`git show 61eb290:_archive/docs/adr/README.md` 等按需取阅） |
 
 **变更义务**：代码改动若影响设计 skill 描述的结构/契约/阶段状态，同一提交内更新该文档的 ✅/🎯 标记；
+完成里程碑/开始任务/调整计划时，同一提交内更新 progress skill（其 §0 更新协议）；
 触及 §7.11 冻结接口（RenderingServer 虚表、`PushBound` 签名）时，先改文档、经确认后再改代码。

@@ -105,7 +105,9 @@ class RenderViewport {
    * ARHudEngine::RenderThreadFunc 在 kSubmitScene 信号驱动下逐屏调用。
    * 六步语义见实现处文档。静态内容（dirty=false）零成本跳过。
    */
-  void RenderAndSubmit();
+  // 返回 true = 本屏本轮真正完成"渲染+回读+MarkReady"（引擎可清本屏脏位）；
+  // false = 未脏或背压跳过（脏位保留，下一轮 submit 重试）。
+  bool RenderAndSubmit();
 
   /** @brief B3: 设置帧图像队列（由 ARHudEngine 创建并注入，非拥有） */
   void SetFrameImageQueue(FrameImageQueue* p_queue) {

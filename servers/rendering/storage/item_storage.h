@@ -525,10 +525,11 @@ class ItemStorage {
   //     屏索引置位。
   //   契约：任何状态变更路径**必须**至少 Mark* 一个屏位，否则该变更
   //   不会被渲染（mask 保持 0 → 全屏跳过）。
-  //   RenderThreadFunc 在一轮逐屏渲染完成后统一 ClearDirty（非逐屏
-  //   清零——逐屏清零会使后续屏漏渲染）。mask==0 的帧全部屏跳过渲染
-  //   ——静态 HUD GPU/CPU 成本 ≈ 0；mask!=0 但本屏位未置的屏同样跳过
-  //   ——屏间不陪跑。
+  //   RenderThreadFunc 逐屏消费：某屏 RenderAndSubmit() 真正渲完才
+  //   ClearScreenDirty(i)；背压跳过的屏保留脏位待下轮 submit 重试
+  //   （旧的全局 ClearDirty 会连跳过屏一起清——首帧更新偶发丢失）。
+  //   mask==0 的帧全部屏跳过渲染——静态 HUD GPU/CPU 成本 ≈ 0；
+  //   mask!=0 但本屏位未置的屏同样跳过——屏间不陪跑。
   //   atomic：置位在渲染线程（命令执行），读取在同一线程循环，无跨
   //   线程；atomic 仅为防御性安全。
   // ─────────────────────────────────────────────────────────────
@@ -541,6 +542,17 @@ class ItemStorage {
   /// @brief 清理屏级路由掩码（渲染循环每轮渲染完成后调用；清零即"无变更"）
   void ClearDirty() {
     dirty_screen_mask_.store(0, std::memory_order_release);
+  }
+
+  /// @brief 清理单屏脏位（渲染线程在该屏本轮真正渲完并提交后调用）
+  /// @param[in] p_screen 屏索引（ViewportID，0-based；≥32 为 no-op）
+  /// @note 逐屏消费：backpressure 跳过的屏保留本位，下一轮 submit 重试，
+  ///       不会被"全局 ClearDirty"吞掉更新（旧全局清零曾致首帧丢失竞态）。
+  void ClearScreenDirty(uint32 p_screen) {
+    if (p_screen >= 32) {
+      return;
+    }
+    dirty_screen_mask_.fetch_and(~(1u << p_screen), std::memory_order_release);
   }
 
   /// @brief 某屏本轮是否有内容变更（false = 该屏静态，可跳过渲染）

@@ -442,29 +442,30 @@ bool RenderViewport::ApplyPendingResize() {
  *   5. FramebufferReadback（FBO → CPU 槽）
  *   6. MarkReady（READY；唤醒 present 线程）
  */
-void RenderViewport::RenderAndSubmit() {
+bool RenderViewport::RenderAndSubmit() {
   if (!initialized_ || queue_ == nullptr || item_storage_ == nullptr) {
-    return;
+    return false;
   }
 
   // 1. dirty（§3.7 内容更新率：静态 HUD 跳过）
   //    B3-M0.5: per-screen 路由——只查本屏位（viewport_index_）；变更
-  //    未触及本屏时本屏跳过，其他屏照常渲染。只读不消费——全局
-  //    dirty 与屏位掩码均由 RenderThreadFunc 在逐屏循环后统一
-  //    ClearDirty（若此处清零，后续屏将永远拿不到 dirty=true → 黑屏）。
+  //    未触及本屏时本屏跳过，其他屏照常渲染。只读不消费——本屏脏位
+  //    由 RenderThreadFunc 在本函数返回 true（真正渲完）后经
+  //    ClearScreenDirty 清除；返回 false 时脏位保留，下一轮 submit
+  //    重试——防止背压跳过被全局清零吞掉（首帧丢失竞态的根因）。
   if (!item_storage_->IsScreenDirty(viewport_index_)) {
-    return;
+    return false;
   }
 
   // 2. Backpressure: skip if frame in flight (anti render-ahead, §3.8)
   if (queue_->HasInFlight()) {
-    return;
+    return false;
   }
 
   // 3. Acquire slot (FREE→WRITING)
   uint32 slot = queue_->TryAcquireFree();
   if (slot == UINT32_MAX) {
-    return;
+    return false;
   }
 
   // 4. Render scene to FBO (same-thread read of ItemStorage)
@@ -481,6 +482,7 @@ void RenderViewport::RenderAndSubmit() {
 
   // 6. Mark READY (wakes present thread)
   queue_->MarkReady(slot);
+  return true;
 }
 
 Error RenderViewport::InitializePostProcess() {

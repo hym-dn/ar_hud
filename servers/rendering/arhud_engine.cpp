@@ -645,13 +645,14 @@ void ARHudEngine::RenderThreadFunc() {
     if (should_render) {
       impl->rd.BeginFrame();
       for (uint32 i = 0; i < screens_.Size(); ++i) {
-        screens_[i]->RenderAndSubmit();
+        // 逐屏消费：仅当该屏真正完成渲染+提交才清本屏脏位；背压跳过的
+        // 屏保留脏位，下一轮（present 释放唤醒 + SubmitScene）重试。
+        // 旧做法是循环后全局 ClearDirty——会把背压跳过屏的更新一并吞掉
+        // （首帧资源创建命令的 dirty 偶发丢失即此竞态）。
+        if (screens_[i]->RenderAndSubmit()) {
+          impl->item_storage.ClearScreenDirty(i);
+        }
       }
-      // 全部屏消费完本轮 dirty 后统一清零（多屏修复：逐屏清零会
-      // 使第 2..N-1 屏永远拿不到 dirty=true）。时序安全：dirty 置位
-      // （Mark*）仅发生在本线程的 command_queue.Flush()（循环前）或
-      // 下一轮 Flush，循环期间无人置位，帧尾清零不会吞掉任何更新。
-      impl->item_storage.ClearDirty();
       impl->rd.EndFrame();
       impl->frame_done_.Post();
     }

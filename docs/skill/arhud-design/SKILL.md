@@ -1002,7 +1002,8 @@ item RID 无代际、不复用（§7.5）；GPU 资源 RID 走代际防悬垂。
 > **裁决更新（2026-11-07）**：本节上方表格保持有效（命名层与 Google 原教一致）；
 > 格式与惯例细则改按 **Google C++ Style 原教**执行——80 列、2 空格缩进、namespace 体不缩进、
 > 大括号一律附尾、`Type* p` 符号贴类型、include guard `#ifndef ARHUD_<相对路径>_H_`（禁 `#pragma once`）、
-> 形参 `snake_case`（弃 `p_` 前缀）、新注释用 `//` 英文 ASCII（Doxygen 块仅存量保留）。
+> 形参 `snake_case`（弃 `p_` 前缀）；**注释体系为工程修订：Doxygen 格式 + 中文**（2026-11-08 裁决，
+> 文件头/类/函数按标签规范，代码本体仍纯 ASCII）。
 > 完整裁决表、存量代码迁移纪律与 clang-format 落地见 **`docs/skill/arhud-coding-style/SKILL.md`**；
 > §7.9/§7.11 历史样例中的 `p_`/Allman 等为起草遗留，不构成风格豁免。
 > **迁移完成度（2026-11-08）**：G1~G6 格式层已全库落地（110 tracked 源文件，clang-format 审计零违例，

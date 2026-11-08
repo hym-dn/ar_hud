@@ -99,8 +99,9 @@ ctest --test-dir build -C Debug            :: 3 个测试须全绿
   大括号**一律附尾**、`Type* p` 符号贴类型、include guard `#ifndef ARHUD_<相对路径>_H_`（**禁 `#pragma once`**）。
 - 命名：类型/方法 PascalCase；变量/形参 snake_case（**弃 `p_` 前缀**，存量随改动迁移）；类成员带尾 `_`
   （struct 成员不带）；常量/枚举值 `kXxx`；宏 UPPER_SNAKE 带 `ARHUD_` 前缀；文件 snake_case。
-- 注释：每文件许可头；新文件无 `@author`；代码纯 ASCII、注释英文 `//` 自由式（Doxygen 块仅存量保留）；
-  `TODO(责任标识):` 格式。
+- 注释：**Doxygen 格式 + 中文**（2026-11-08 裁决）——文件头 `@file/@brief/@author/@version/@date/@copyright/@ingroup`；
+  公开 API 必配 `@brief/@param/@return`；成员与枚举值行尾 `///<`；代码本体仍纯 ASCII、文件 UTF-8；
+  `TODO(责任标识):` 中文说明。细则见风格 skill §7。
 - `enum class` only；`using` 优于 `typedef`；`override`/`final` 必写；include 顺序：关联头→C→C++→第三方→工程。
 - **禁止**：`iostream`、`printf/sprintf`、裸 `new/delete`、`malloc/free`、`goto`、`file(GLOB)`；
   引擎代码禁 `throw/try/catch` 与 `dynamic_cast`（编译开关启用属 ADR-0004 例外，错误一律返回 `Error`）。
@@ -115,7 +116,7 @@ ctest --test-dir build -C Debug            :: 3 个测试须全绿
 3. `shader_cache/` 是 demo 运行时产物，可整体删除，勿手工编辑、勿提交新增。
 4. RD 是渲染线程专用 API：断言 `IsRenderThread() || command_queue_ == nullptr`；跨线程一律走 RenderServer RID 分裂。
 5. 多屏共享栈：`RenderViewport` 经 `EngineStackRefs` 引用共享对象，自身不拥有——勿在视口里 new 共享资源。
-6. MSVC `/utf-8` 已开（为历史中文注释兼容）；**新代码注释写英文、纯 ASCII**（风格 skill §7）。
+6. MSVC `/utf-8` 已开；**注释规范 = Doxygen 中文**（风格 skill §7，2026-11-08 裁决），文件必须 UTF-8。
 
 ## 8. 文档与决策索引
 

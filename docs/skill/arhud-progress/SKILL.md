@@ -45,7 +45,7 @@ Godot 对齐绞杀者迁移 **S0 + S1 大部完成**；全库 Google 原教风�
 
 | 事项 | 状态 |
 |---|---|
-| 编码风格（Google 原教裁决） | ✅ 2026-11-07 全库 G1~G6 落地（110 文件，clang-format 幂等零违例）；W1 `p_` 前缀 / W2 中文注释**随改动收敛**，不批量强改 |
+| 编码风格（Google 原教裁决） | ✅ 2026-11-07 全库 G1~G6 落地（110 文件，clang-format 幂等零违例）；W1 `p_` 前缀随改动收敛；**注释体系 2026-11-08 修订为 Doxygen 中文**（§7），存量英文注释滚动收敛 |
 | demo 端到端出图 | ✅ 2026-11-08 五路全验（phase2/canvas/spatial/compositor/text，DPI-aware 截图 + 引擎像素 dump 双确认） |
 | 测试 | ✅ ctest 34/34 绿（command_queue / item_storage / camera_routing） |
 | 构建自洽 | ✅ clone 即 `build.bat conan/tests` 可全量构建 |
@@ -58,6 +58,9 @@ Godot 对齐绞杀者迁移 **S0 + S1 大部完成**；全库 Google 原教风�
 
 ## 3. 已完成历史（append-only，新条目加在最上面）
 
+- **2026-11-08 注释裁决修订**：编码风格 §7 改为 **Doxygen 格式 + 中文**（工程对原教的明示修订，
+  原教注释章节属项目自定范围）；文件头/类/函数/成员标签规范落地，AGENTS/design/账本同步；
+  存量英文 `//` 注释（迁移期产物）随改动滚动收敛，不批量强改。
 - **2026-11-08 `bd3b4c1`** Docs 设计文档收敛：architecture.md → `docs/skill/arhud-design/SKILL.md`；删除 `_archive/` 旧体系 50 件；引用全库同步。
 - **2026-11-08 `c5ac51e`** Fix 首帧 dirty 竞态：`RenderAndSubmit` 返回 bool，引擎逐屏消费（`ClearScreenDirty(i)` 仅在真正渲完后），替换全局 `ClearDirty`；box 首渲恢复稳定 frame 2。
 - **2026-11-08 `6dc8047`** Fix composite 致场景零像素：六操作二分定位到 composite pipeline bind 泄漏 `GL_DEPTH_WRITEMASK=FALSE` → 次帧 depth clear 被吞 → 深度滞留 0。双修：BeginSegment 不再每帧 Reset 状态缓存（同 context 缓存须如实）；`CommandBeginRenderPass` 清深度时临时强制 mask。

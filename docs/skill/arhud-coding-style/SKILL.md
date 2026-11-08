@@ -8,6 +8,8 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 > **裁决记录（2026-11-07）**：本工程编码风格**全部采用 Google C++ Style Guide 原教条款**。
 > 与 Google 条款不一致的存量代码（Godot 风味格式）**不再视为合法风格**，按 §1.3 迁移策略逐步重排。
 > 本文件是原教的**本工程化誊本 + 裁决表**；两者冲突时以本文件为准，本文件未覆盖处以 Google 指南原文为准。
+> **注释体系为明示修订**（2026-11-08）：采用 Doxygen 格式 + 中文（§7），原教注释章节属项目自定范围，
+> 不构成违基线；其余格式条款仍严格原教。
 > `docs/skill/arhud-design/SKILL.md` §10 保留浓缩表并指向本文件；§7.9/§7.11 历史代码样例中的 `p_` 前缀、Allman
 > 大括号等属**历史起草风格**，不视为风格豁免——冻结面指参数的**类型/顺序/语义**，不含格式与参数名。
 
@@ -41,7 +43,7 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 | # | 项目 | Google 原教 | 存量现状 | 迁移方式 |
 |---|---|---|---|---|
 | W1 | 形参命名 | `snake_case`，**无前缀** | `p_` 前缀（Godot 惯例） | 改动到的函数顺手改名；参数名不参与重载决议，无 ABI/接口影响 |
-| W2 | 注释体系 | 许可头 + `//` 自由式文档注释 | Doxygen `@file/@brief/@author/@date` 头 | 存量保留不强制转；**新文件按 §7**；`@author` 行按原教不再新增（"new files should usually not contain copyright notice or author line"） |
+| W2 | 注释体系 | ~~Google `//` 自由式~~ → **本工程裁决（2026-11-08）：Doxygen 格式 + 中文**（§7） | 存量中文 Doxygen 头 ✓ 合规；迁移期英文 `//` 注释随改动转 Doxygen 中文 | 不批量强改，滚动收敛 |
 
 ### 1.2 命名层现状 = 原教，零迁移
 
@@ -249,21 +251,109 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 - **编译器扩展**（`__declspec/__attribute__`）：只允许出现在 `typedefs.h` 的宏包装层内
   （`ARHUD_ALIGN_AS/ALWAYS_INLINE/...`），业务代码不裸写。
 
-## 7. 注释
+## 7. 注释（Doxygen · 中文）★ 本工程裁决修订
 
-- **每个文件以许可样板开头**（现工程统一版权行风格 `Copyright (c) 2025 ARHud Project` 即充当此任）。
-- 新文件**不加 `@author` 行**（原教：作者归属走版本控制，"new files should usually not contain copyright
-  notice or author line"；对文件做重大改动时建议顺手删除旧 author 行——存量迁移期可缓做）。
-- **文件头注释**：仅当该头声明多个面向用户的抽象时，写"这些抽象的集合"级说明；单类文件把文档放在类注释上即可。
-- 注释符号：`//` 与 `/* */` 皆可，同文件保持一致；行内尾注释对齐一致。
-- **函数**：声明处注释说**用途**（做什么、参数含义、返回、可空性、性能代价——非显然才写）；
-  定义处注释说**做法**。Doxygen 标签不是原教内容：**新代码用 `//` 自由式**（`// Returns…、// |input| …`），
-  存量 `/** */` 块不强制转，但改动到的函数顺手替换。
-- **TODO**：`// TODO(责任标识): 内容`——写 bug ID、人名或文档链接；无主 TODO 不许入库。
-- **会员注释**：类不变量、线程约束、所有权语义是**必写项**（车规评审重点）；
-  跨线程成员注明"哪个线程读写、发布次序"。
-- **非 ASCII**：代码（含标识符、字符串字面量）必须纯 ASCII；注释以**英文**为准，
-  存量中文注释保留不强制翻译（`/utf-8` 开关因历史中文注释继续开启）。
+> **裁决（2026-11-08）**：注释体系采用 **Doxygen 格式 + 中文**——这是工程对 Google 原教的
+> 明示修订（原教注释章节本就允许"跟随项目约定"，且其 `//` 自由式非硬规）。
+> 本节取代此前"新代码 `//` 英文"条款；原教其余条款不受影响。
+
+### 7.1 语言与编码
+
+- **注释一律中文**（与存量代码统一；术语保留英文原文，如 render pass、staging、backpressure、
+  RID 分裂，不硬译）。
+- **代码本体（标识符、字符串字面量）仍纯 ASCII**；中文只允许出现在注释中。
+- 文件编码 **UTF-8**（MSVC `/utf-8` 已全局开启）；禁止 GBK/BOM 混入。
+- 存量英文 `//` 注释（2026-11-07 迁移期产物）：改动到即顺手转 Doxygen 中文，不批量强改
+  （纪律同 W1/W2 滚动收敛）。
+
+### 7.2 文件头（每个 .h/.cpp 必配）
+
+```cpp
+/**
+ * @file mesh_storage.cpp
+ * @brief 网格资源 Storage——RID→Surface 账本与 GPU 缓冲生命周期实现。
+ *
+ * @par 职责边界
+ *   - 只做簿记与 RD 资源转发，不含渲染逻辑（renderer → storage 单向）。
+ *   - RID 分裂契约（design skill §7.11 F）：Allocate 同步出壳，Initialize 渲染线程填壳。
+ *
+ * @author yameng.he
+ * @version 1.1
+ * @date 2026-11-08
+ * @copyright Copyright (c) 2026 ARHud Project
+ * @ingroup rendering
+ */
+```
+
+- 必填：`@file`、`@brief`（一句话职责）、`@copyright`；`@par` 段按需（设计要点/契约/状态表）。
+- `@author/@version/@date`：本工程**保留**（车规追溯要求，覆盖原教"新文件不加 author line"条款）；
+  重大改动时更新 `@version/@date`，可加多个 `@date` 行记录修订。
+- `@ingroup` 取模块名：`core / platform / drivers / rendering / scene / app / tests`。
+
+### 7.3 类 / 结构体
+
+```cpp
+/**
+ * @brief 每屏双槽帧图像队列——渲染线程→上屏线程的唯一交接通道（零拷贝语义）。
+ *
+ * @par 状态机
+ *   FREE → WRITING → READY → COMMITTED → ON_SCREEN → FREE
+ *
+ * @par 线程模型
+ *   生产=渲染线程，消费=上屏线程；背压保证每屏最多 1 帧在飞。
+ */
+class FrameImageQueue {
+```
+
+- 类注释必含 `@brief`；**不变量、线程约束、所有权语义为必写项**（车规评审重点），
+  用 `@par` 分段。跨线程成员注明"哪个线程读写、发布次序"。
+
+### 7.4 函数
+
+```cpp
+  /**
+   * @brief 尝试领取一个空闲槽位进入写入态（FREE→WRITING，非阻塞）。
+   * @return 槽位索引；无空槽时返回 UINT32_MAX。
+   * @retval UINT32_MAX 两槽均被占用（背压生效，调用方应跳过本轮）。
+   * @pre 仅渲染线程调用（与 MarkReady 同线程）。
+   * @note 不产生阻塞——与 free_sem_ 的计数语义解耦，见 §3.8 背压设计。
+   */
+  uint32 TryAcquireFree();
+```
+
+- **声明处注释说用途**：`@brief` + `@param[in]/[out]/[in,out]` + `@return`/`@retval` +
+  `@pre/@note/@see`——非显然才写，但公开 API 的 `@brief/@param/@return` 三件套必配。
+- **定义处注释说做法**（算法要点、坑、偏离），无新信息则不重复声明注释。
+- 简单访问器/一行函数：行尾 `///<` 即可，不强制块注释。
+
+### 7.5 成员 / 枚举 / 常量
+
+```cpp
+  std::atomic<uint32> dirty_screen_mask_{0};  ///< ≤32 屏脏位图；Mark* 是唯一置位入口
+  enum class PresentMode : uint8 {
+    kReadback = 0,  ///< 回读上屏：CPU 像素 → GDI/EGL 呈现
+    kSwap = 1,      ///< Swap 上屏：零回读零拷贝（Windows 方案 B / 生产形态）
+  };
+```
+
+- 数据成员、枚举值一律行尾 `///<`（一句话语义；语义复杂者升级块注释）。
+
+### 7.6 标签与格式纪律
+
+- 白名单标签：`@brief @param @return @retval @note @pre @post @warning @see @par
+  @deprecated @author @version @date @copyright @ingroup @code @endcode @b @c @ref`。
+  不使用原教没有、Doxygen 生僻的标签（`@implements/@class` 之类）。
+- 块注释统一 `/** ` 起、` * ` 续行、` */` 收尾；行内注释 `//` 后空一格。
+- 缩进随所在层级；`@brief` 不换行写完一句。
+- 图/表用 `@code/@endcode` 包裹 ASCII 图（clang-format 不重排块注释，安全）。
+- **TODO**：`// TODO(责任标识): 中文说明`——写 bug ID、人名或文档链接；无主 TODO 不许入库。
+- 禁止注释掉的死代码入库（git 是历史）；临时调试注释提交前清除。
+
+### 7.7 与 clang-format 的配合
+
+clang-format（本工程配置）**不改注释内容**，但会保留 `/** */` 块原样——Doxygen 块的
+排版（对齐、续行 ` * `）由作者负责；评审用 `git diff` 检查注释与代码同步性：
+**改行为必改注释，注释与代码矛盾按缺陷处理**。
 
 ## 8. 项目补充条款（Google 之外的工程硬约束，评审同查）
 
@@ -282,7 +372,7 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 |---|---|---|---|
 | 异常/RTTI **编译开关** | 禁用（-fno-exceptions、不写 dynamic_cast） | MSVC 保持启用，**引擎代码仍不使用** | ADR-0004（集成第三方/工具链现实）；行为层仍按 §6 |
 | `.cc` 扩展名 | 推荐 | 维持 `.cpp` | File Names 条款自留"follow project convention"空间 |
-| Doxygen 存量块 | 无此体系 | 保留、只减不增 | §7 |
+| Doxygen + 中文注释 | 注释体系无此规定（`//` 自由式，跟随项目） | **本工程裁决**：Doxygen 格式 + 中文（§7，2026-11-08） | 项目自定范围，不违基线 |
 | `p_` 前缀、`Type *p`、Allman、`#pragma once`、100 列、namespace 缩进 | — | **均判违规，按 §1.3 迁移**，非豁免 | 本次裁决 G1–G6/W1 |
 
 ## 9. 工具与落地
@@ -297,7 +387,8 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 ## 10. 提交前自查清单
 
 1. `clang-format --dry-run --Werror <改动文件>` 零告警？
-2. 新文件：guard 齐全、许可头、无 `@author`、注释英文 ASCII？
+2. 新文件：guard 齐全、Doxygen 中文文件头（@file/@brief/@copyright/@author/@date/@ingroup）？
+   公开 API 三件套（@brief/@param/@return）齐？不变量/线程/所有权注释写了？
 3. 有无残留 `p_` / `Type *p` / 缩进 namespace 出现在**你改动过的行**？
 4. 头文件是否自包含、include 五段有序、无 `using namespace`？
 5. 新单参构造 `explicit`？虚函数无默认实参？构造无重活？
@@ -310,19 +401,35 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 ## 附录 A · 新文件模板（.h）
 
 ```cpp
-// Copyright (c) 2026 ARHud Project
+/**
+ * @file foo_bar.h
+ * @brief FooBar——示例：GPU 侧宽度簿记与初始化契约。
+ *
+ * @par 线程模型
+ *   仅主线程调用；Initialize 在渲染线程执行（RID 分裂）。
+ *
+ * @author yameng.he
+ * @version 1.0
+ * @date 2026-11-08
+ * @copyright Copyright (c) 2026 ARHud Project
+ * @ingroup rendering
+ */
 
 #ifndef ARHUD_SERVERS_RENDERING_FOO_BAR_H_
 #define ARHUD_SERVERS_RENDERING_FOO_BAR_H_
 
 #include <cstdint>
 
+#include "typedefs.h"
+
 namespace arhud {
 
-// One-sentence summary of FooBar's role and thread-safety contract.
-//
-// Invariants: ...
-// Thread model: callable from the main thread only.
+/**
+ * @brief 示例类：宽度资源壳（被动状态 + 两阶段初始化）。
+ *
+ * @par 不变量
+ *   width_px_ 恒 > 0（Initialize 成功后）。
+ */
 class FooBar final {
  public:
   explicit FooBar(uint32 width_px);
@@ -330,13 +437,16 @@ class FooBar final {
   FooBar& operator=(const FooBar&) = delete;
   ~FooBar();
 
-  // Initializes GPU-side state. Returns kInvalidParameter if |width_px| == 0.
+  /**
+   * @brief 初始化 GPU 侧状态（渲染线程执行）。
+   * @return kOK 成功；kInvalidParameter 当 width_px == 0。
+   */
   Error Initialize();
 
-  uint32 width_px() const { return width_px_; }
+  uint32 width_px() const { return width_px_; }  ///< 当前宽度（像素）
 
  private:
-  uint32 width_px_ = 0;
+  uint32 width_px_ = 0;  ///< 宽度（像素）；构造后只读
 };
 
 }  // namespace arhud

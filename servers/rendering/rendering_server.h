@@ -11,7 +11,7 @@
  *   具体实现（RenderingServerDefault）负责把这些调用翻译为命令，交由渲染线程执行。
  *
  * @par 阶段（S0：绞杀者门面）
- *   本类是 servers 重设计的**冻结接口**（architecture.md §7.11 A）。
+ *   本类是 servers 重设计的**冻结接口**（docs/skill/arhud-design/SKILL.md §7.11 A）。
  *   S0 阶段由 RenderingServerDefault 实现，内部**委托旧 RenderServer**，
  *   行为与现状完全一致（app/demo 改走本接口，测试保持绿）；
  *   后续阶段（S1 队列 / S2 RSG / S3~S6 拆分）逐步替换门面内部的旧实现。
@@ -46,7 +46,7 @@
  * @par S0 过渡签名
  *   变长数据形参暂用「裸指针 + size」（`const uint8*` / `const
  * uint32*`），由实现侧 在入队时同步拷贝进命令载荷；S1 随 `Buffer` /
- * `Ref<Buffer>` 参数体系替换 （architecture.md §7.11 E）。
+ * `Ref<Buffer>` 参数体系替换 （docs/skill/arhud-design/SKILL.md §7.11 E）。
  *
  * @see rendering_server_default.h  默认实现（S0 门面）
  * @see render_server.h             S0 被委托的旧实现

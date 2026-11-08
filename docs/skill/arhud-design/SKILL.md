@@ -1,9 +1,27 @@
-# ARHud 引擎架构规范（统一分层）
+---
+name: "arhud-design"
+description: "ARHud 渲染引擎代码设计唯一事实源：六层分层与依赖规则、servers 层对象地图、Route B 线程模型、帧节拍与多屏上屏、Godot 4.6 对齐目标与偏离清单、冻结接口规格（§7.11）、绞杀者迁移阶段（§7.12）。改动架构/接口/线程模型前先读本文并同步更新 ✅/🎯 标记；编码风格另见 arhud-coding-style skill。"
+---
 
-> 状态：**现状 + 目标**。各层先如实描述当前代码的真实结构 / 契约 / 线程模型（与代码一致）；
+# ARHud 引擎架构规范（统一分层 · 唯一设计事实源）
+
+> 状态：**现状 + 目标**（2026-11-08 快照）。各层先如实描述当前代码的真实结构 / 契约 / 线程模型（与代码一致）；
 > servers 章节在其后给出对齐 Godot 4.6 的**目标规范**与**偏离清单**。
-> 本文取代原 `docs/servers-layer-design.md`——servers 层不再单独成文，而是作为分层整体的一章。
-> 参考源码：Godot 4.6（`servers/rendering` 等）。
+> 本文是工程**唯一代码设计文档**（原 `docs/architecture.md`，2026-11-08 迁入本 skill 并合并
+> 旧 `skill/arhud-architecture` / `arhud-render-thread-arch` / `arhud-multiscreen-arch` /
+> `arhud-improvement` 四份设计 skill 的仍有效内容——旧文档体系已删除，历史见 git）。
+> 参考源码：Godot 4.6（`servers/rendering` 等）。编码风格 = Google C++ Style 原教，
+> 见 `docs/skill/arhud-coding-style/SKILL.md`（全库格式迁移已于 2026-11-07 完成）。
+
+## 0a. 当前进展快照（2026-11-08）
+
+- ✅ 绞杀者迁移：S0 门面 + S1 命令层（`PushBound/PushBoundBlob`、H1 `*CreateParams` param struct
+  已落地；`Ref<Buffer>` 参数体系未做，纹理/字体像素仍走裸指针+size 过渡签名）；
+- ✅ 全库 Google 原教风格迁移（110 源文件，clang-format 幂等，guard 统一）；
+- ✅ **五路 demo 端到端出图验证通过**（phase2/canvas/spatial/compositor/text，2026-11-08），
+  期间修复的渲染链路缺陷均已入库（mesh is_valid 时序、FrameImageQueue ready_index 自覆盖、
+  post-process 输出 FBO、UBO block binding 名、绕序/LEQUAL、状态缓存谎报、dirty 逐屏消费）；
+- ⏳ 未开始：S2 RSG 全局、S3 Storage 更名、S4 ItemStorage 拆分、S5 TextServer、S6 RendererViewport、S7 收口。
 
 ---
 
@@ -400,6 +418,9 @@ v3.2 唯一的**阻塞出口**是整批屏障 `Sync()`（对齐 Godot `sync()`�
   提供 `*GetEffective*` 查询与 `CanvasItemEffectiveState/TextItemEffectiveState`。
 - **脏位**：单一 `std::atomic<uint32> dirty_screen_mask_`（≤32 屏位图）——
   既表"是否有变化"(IsDirty) 又表"哪些屏脏"(IsScreenDirty)；`Mark*` 是**唯一**置位入口。
+  消费为**逐屏制**（2026-11-08）：`RenderThreadFunc` 仅在某屏 `RenderAndSubmit()` 返回
+  true（真正渲完+MarkReady）后 `ClearScreenDirty(i)`；背压跳过的屏保留脏位待下轮 submit
+  重试——旧的全局 `ClearDirty` 会吞掉跳过屏的更新（首帧丢失竞态，已修）。
 - item RID 一经分配**不复用**（无代际），线性 O(n) 查找对 HUD 规模足够。
 
 ### 7.6 ✅ 现状：视口与 per-viewport 场景状态（ADR-0006/0007）
@@ -809,8 +830,8 @@ virtual RID TextureCreateFrom(const TextureCreateParams &p_params) = 0;
 
 | 阶段 | 动作 | 新增 | 下线 | 验收 |
 |---|---|---|---|---|
-| **S0 门面** ✅ | 立 `RenderingServer`（抽象）+ `RenderingServerDefault`（门面，内部**委托旧** `RenderServer`）；`ARHudEngine` 值持门面并装配 `RenderingServer::singleton`；app/demo 经 `GetRenderServer()` / `GetSingleton()`；3D item 名对齐 `Instance*`、`MaterialSetParam`、`FontCreateFromFreeType` | `rendering_server.h/.cpp`、`rendering_server_default.h/.cpp` | — | 5 demo 出图不变；3 测试绿（待编译验证） |
-| **S1 队列** ⏳（M2+M3 ✅、S1-GL ✅ 2026-10-07；H1 param struct 待做） | 扩展 `CommandQueue`（`PushBound`/`PushBoundBlob`，M1 已落地）并**全量改写调用点**（M2）；删 `CommandExecutor`/33 命令结构体/`RenderCommandType`/`Execute`（M3）；`RenderingServerDefault` 改用绑定命令；**资源创建按 H1 改 `*CreateParams` param struct**，`Ref<Buffer>` 参数体系落地（替换 S0 裸指针过渡签名）；**子步 S1-GL：GL 命令缓冲退化为直通（§6.4）；2026-10-11 整层退役（连多态 `ICommandBuffer` 与 `command_buffer.*` 文件一并删除）** | `command_queue.h` 扩展（`PushBound*`） | `command_executor.*`、`render_commands.h`；`command_buffer_gl` 录制机制（`CommandNode`/union/`kReplayTable`）；`command_buffer.h` / `command_buffer_gl.{h,cpp}`（2026-10-11） | 搬运 / 同步单测；`test_command_executor` 改「装配 `RenderGlobals` → `PushBound` → `Flush` 断言」；demo 出图 |
+| **S0 门面** ✅ | 立 `RenderingServer`（抽象）+ `RenderingServerDefault`（门面，内部**委托旧** `RenderServer`）；`ARHudEngine` 值持门面并装配 `RenderingServer::singleton`；app/demo 经 `GetRenderServer()` / `GetSingleton()`；3D item 名对齐 `Instance*`、`MaterialSetParam`、`FontCreateFromFreeType` | `rendering_server.h/.cpp`、`rendering_server_default.h/.cpp` | — | 5 demo 出图不变；测试全绿 ✅（2026-11-08 编译+34 用例+五路出图验证） |
+| **S1 队列** ⏳（M1~M3 ✅、S1-GL ✅ 2026-10-11、**H1 param struct ✅ 2026-11-08 实测确认**；余 `Ref<Buffer>` 参数体系） | 扩展 `CommandQueue`（`PushBound`/`PushBoundBlob`，M1 已落地）并**全量改写调用点**（M2）；删 `CommandExecutor`/33 命令结构体/`RenderCommandType`/`Execute`（M3）；`RenderingServerDefault` 改用绑定命令；**资源创建按 H1 改 `*CreateParams` param struct**（已落地：`TextureCreateParams`/`MeshCreateQuad/Box/SphereParams` 等随 `PushBoundBlob` 走线）；`Ref<Buffer>` 参数体系**未落地**（纹理/字体像素仍为裸指针+size 过渡签名，跨线程由 blob 同步拷贝保证安全）；**子步 S1-GL：GL 命令缓冲退化为直通（§6.4）；2026-10-11 整层退役（连多态 `ICommandBuffer` 与 `command_buffer.*` 文件一并删除）** | `command_queue.h` 扩展（`PushBound*`） | `command_executor.*`、`render_commands.h`；`command_buffer_gl` 录制机制（`CommandNode`/union/`kReplayTable`）；`command_buffer.h` / `command_buffer_gl.{h,cpp}`（2026-10-11） | 搬运 / 同步单测；`test_command_executor` 改「装配 `RenderGlobals` → `PushBound` → `Flush` 断言」；demo 出图 ✅（2026-11-08 五路验证通过） |
 | **S2 全局** | `RenderingServerGlobals`（RSG）替换 `RenderGlobals`；命令实现体经 RSG 直达存储 | `rendering_server_globals.h` | `render_globals.h` | grep 无 `RenderGlobals` |
 | **S3 资源 Storage** | `Renderer*Storage` 对齐重命名（Texture/Material/Mesh/Light）；`light` 从 `ViewportSceneState` 迁入 `RendererLightStorage` | `storage/renderer_*_storage.*` | 旧 storage 名 | 单测 + demo |
 | **S4 item 拆分** | `ItemStorage` 拆为 `RendererCanvasCull`（2D）/ `RenderingMethod`+`RendererSceneCull`+`RendererSceneRender`（3D）；层级 / 脏位随迁 | `canvas/`、`scene/` | `item_storage.*` | item_storage 单测迁移 + demo（含 ADR-0005 树形） |
@@ -988,6 +1009,8 @@ item RID 无代际、不复用（§7.5）；GPU 资源 RID 走代际防悬垂。
 > 形参 `snake_case`（弃 `p_` 前缀）、新注释用 `//` 英文 ASCII（Doxygen 块仅存量保留）。
 > 完整裁决表、存量代码迁移纪律与 clang-format 落地见 **`docs/skill/arhud-coding-style/SKILL.md`**；
 > §7.9/§7.11 历史样例中的 `p_`/Allman 等为起草遗留，不构成风格豁免。
+> **迁移完成度（2026-11-08）**：G1~G6 格式层已全库落地（110 tracked 源文件，clang-format 审计零违例，
+> 构建+34 测试全绿）；W1（`p_` 前缀清除）/W2（注释转英文）按该 skill §1.3 随改动收敛，不批量强改。
 
 ---
 

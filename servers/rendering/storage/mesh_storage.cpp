@@ -198,7 +198,7 @@ Error MeshStorage::MeshInitializeQuad(RID p_mesh,
 
   info->name = p_name ? UString(p_name) : UString();
   // Mark the shell valid before the internal MeshAddSurface() call: its guard
-  // rejects uninitialized shells (RID-split contract, architecture.md §7.11 F).
+  // rejects uninitialized shells (RID-split contract, design skill §7.11 F).
   info->is_valid = true;
   uint32 surf_idx =
       MeshAddSurface(p_mesh, vertices, 4, kVertex2DStride, indices, 6,

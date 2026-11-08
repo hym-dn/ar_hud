@@ -7,7 +7,7 @@
  *   使 app 先稳定在目标接口上，而行为与 S0 之前完全一致（零行为变化）。
  *
  * @par 阶段（S0：绞杀者门面）
- *   本类是 architecture.md §7.12 S0
+ *   本类是 docs/skill/arhud-design/SKILL.md §7.12 S0
  * 的产物。目标不是实现功能，而是**钉住接缝**： app → RenderingServer（抽象）→
  * RenderingServerDefault（门面）→ RenderServer（旧）。 后续各阶段（S1 队列 / S2
  * RSG / S3~S6 拆分）再逐个替换门面内部实现。

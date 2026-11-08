@@ -8,7 +8,7 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 > **裁决记录（2026-11-07）**：本工程编码风格**全部采用 Google C++ Style Guide 原教条款**。
 > 与 Google 条款不一致的存量代码（Godot 风味格式）**不再视为合法风格**，按 §1.3 迁移策略逐步重排。
 > 本文件是原教的**本工程化誊本 + 裁决表**；两者冲突时以本文件为准，本文件未覆盖处以 Google 指南原文为准。
-> `docs/architecture.md` §10 保留浓缩表并指向本文件；§7.9/§7.11 历史代码样例中的 `p_` 前缀、Allman
+> `docs/skill/arhud-design/SKILL.md` §10 保留浓缩表并指向本文件；§7.9/§7.11 历史代码样例中的 `p_` 前缀、Allman
 > 大括号等属**历史起草风格**，不视为风格豁免——冻结面指参数的**类型/顺序/语义**，不含格式与参数名。
 
 ## 0. 何时使用本 skill
@@ -18,8 +18,8 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 - 配置 clang-format / IDE；
 - 裁决"这行旧代码要不要顺手改齐"。
 
-**优先级**：本 skill > `architecture.md` §10 > Google 指南原文 > 周边存量代码。
-唯一例外：`architecture.md` §7.11 **冻结接口规格**（虚表形状、`PushBound` 签名语义）——触及其内容先回改文档。
+**优先级**：本 skill > `docs/skill/arhud-design/SKILL.md` §10 > Google 指南原文 > 周边存量代码。
+唯一例外：设计 skill（`docs/skill/arhud-design/SKILL.md`）§7.11 **冻结接口规格**（虚表形状、`PushBound` 签名语义）——触及其内容先回改文档。
 
 ---
 
@@ -232,7 +232,7 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 - **所有权与智能指针**：单一所有权用 `std::unique_ptr` + `std::make_unique`；
   共享所有权允许但须注释理由；裸指针 = **非拥有**观察者。
   工程 `Ref<T>`（侵入式计数，Godot 机制）是**项目补充件**，等价 Google 的 shared 语义，
-  用于 S1 `Ref<Buffer>` 参数体系（architecture.md D3），不视为违反原教。
+  用于 S1 `Ref<Buffer>` 参数体系（设计 skill D3），不视为违反原教。
 - **全局/静态存储期对象**：必须**平凡可析构**（原教硬规）；经验式"该声明单独看能写 constexpr"即合规。
   `RenderGlobals` 的 `static inline Xxx* x = nullptr;` 全为指针——**合规范例**；
   动态初始化仅限受限场景并注释；函数内 static 允许（线程安全初始化）。
@@ -272,7 +272,7 @@ description: "ARHud 工程编码风格约束。以 Google C++ Style Guide 原教
 - 禁 `iostream`、`printf/sprintf`、裸 `new/delete`（用 `ARHUD_NEW/DELETE` 或智能指针）、`malloc/free`、`goto`；
 - CMake 禁 `file(GLOB)`；新源文件手工进模块 `CMakeLists.txt` 显式列表；
 - 错误一律 `Error` 枚举返回；
-- 分层三硬规（契约归位 / `renderer→storage` 单向 / drivers 不倒挂）见 `architecture.md` §1.4；
+- 分层三硬规（契约归位 / `renderer→storage` 单向 / drivers 不倒挂）见 `docs/skill/arhud-design/SKILL.md` §1.4；
 - 跨线程数据：禁裸指针入命令；`PushBound/PushBoundBlob` 参数 `static_assert(trivially_copyable)` 守门；
   变长载荷走 blob 或 `Ref<Buffer>`（S1 后）。
 

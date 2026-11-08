@@ -1,8 +1,9 @@
 # AGENTS.md — ARHud 渲染引擎（AI 上手指南）
 
-> 单一事实源：`docs/architecture.md`（现状✅ + 目标🎯 + 冻结规格）。本文只做浓缩与导航，不重复细节；
-> 两者冲突以 `docs/architecture.md` 为准。**改代码涉及架构 / 接口冻结面时，必须先回改该文档再动代码**（§7.11 冻结门槛）。
-> 历史文档体系（旧 AGENTS/ADR/devlog/process/skill）已整体归档在 `_archive/`，仅供追溯，不再维护。
+> 单一事实源：`docs/skill/arhud-design/SKILL.md`（现状✅ + 目标🎯 + 冻结规格，唯一代码设计文档）。
+> 本文只做浓缩与导航，不重复细节；两者冲突以设计 skill 为准。
+> **改代码涉及架构 / 接口冻结面时，必须先回改该文档再动代码**（§7.11 冻结门槛）。
+> 旧文档体系（ADR/devlog/process/设计 skill 旧版）已删除；历史完整保留在 git（≤`c5ac51e` 前任意提交）。
 
 ## 0. 一句话定位
 
@@ -11,18 +12,17 @@ Windows + OpenGL（MSVC，静态库），Conan 2.x 管依赖。主线程发命�
 
 ## 1. 工程现状（2026-11 快照）
 
-- **Godot 对齐迁移（绞杀者计划 S0→S7，见 architecture.md §7.12）进行中**：
+- **Godot 对齐迁移（绞杀者计划 S0→S7，见设计 skill §7.12）进行中**：
   - ✅ S1-M1~M3：命令层已收敛为绑定调用 `CommandQueue::PushBound/PushBoundBlob`；
     `RenderCommandType`/33 个命令结构体/`CommandExecutor`/多态 `ICommandBuffer` 录制层**均已删除**。
   - ✅ S0：新门面 `rendering_server.h`（抽象 API）+ `rendering_server_default.*`（**内部委托旧 `RenderServer`**；
     `Init/Finish/Draw/Sync/HasChanged/FreeRid` 为 stage-gated 占位，待 S1 接管）。
-  - ⏳ S1 收尾（当前任务）：H1 `*CreateParams` param struct 收口、`Ref<Buffer>` 参数体系落地
-    （替换 S0 裸指针过渡签名）。
+  - ⏳ S1 收尾（当前任务）：H1 `*CreateParams` param struct **已落地**；余 `Ref<Buffer>` 参数体系落地
+    （替换现裸指针+size 过渡签名——跨线程安全已由 blob 同步拷贝保证，属类型美化非正确性）。
   - ☐ 未开始：S2 RSG 全局、S3 Storage 更名、S4 ItemStorage 拆分、S5 TextServer、S6 RendererViewport、S7 收口。
 - 旧实现 `render_server.*` 与门面**并存**是绞杀者过渡态，勿提前删除；删除判定：`grep -r "render_server_\."` 无命中。
-- 迁移代码（S0/S1 产物）与**全库 Google 原教风格重排**已于 2026-11-07 入库（含旧布局 21 件删除落库）；
-  工作区仅余文档归档件（`_archive/` untracked、旧 `.md` 4 件待删）与构建脚本/CMake/conanfile 等非源码变更，
-  动手前先 `git status` 确认。
+- 迁移代码、**全库 Google 原教风格重排**、渲染链路修复（五路 demo 端到端出图验证，2026-11-08）均已提交并推送；
+  工作区常态应为 clean，动手前 `git status` 确认即可。
 
 ## 2. 分层与依赖规则
 
@@ -40,7 +40,7 @@ core → platform → drivers → servers → scene → app        （单向，�
 | `app/` | arhud_demo_* | 5 个 demo：phase2（越层豁免）+ phase4 canvas/spatial/compositor/text | 各 `<dir>/main.cpp` |
 | `tests/` | arhud_tests | GoogleTest 3 个：command_queue / item_storage / camera_routing | `tests/CMakeLists.txt` |
 
-**三条硬性规则**（architecture.md §1.4，评审必查）：
+**三条硬性规则**（设计 skill §1.4，评审必查）：
 1. 契约归位：接口头住模块根，平台/后端实现在子目录（`drivers/*.h` ↔ `drivers/gl/`；`platform/*.h` ↔ `platform/windows/`）。
 2. `renderer → storage` 单向：`servers/rendering/storage/` 下的头**禁止** include `renderer/`。
 3. drivers 不倒挂 servers；servers PUBLIC 链 drivers、PRIVATE 链 platform（平台类型不外泄给 app）。
@@ -124,10 +124,9 @@ ctest --test-dir build -C Debug            :: 3 个测试须全绿
 
 | 想知道 | 去哪看 |
 |---|---|
-| 架构现状/目标/偏离/迁移阶段 | `docs/architecture.md`（§1 分层、§7 servers、§7.12 阶段表、§7.11 冻结规格） |
+| 架构现状/目标/偏离/迁移阶段 | `docs/skill/arhud-design/SKILL.md`（§1 分层、§7 servers、§7.12 阶段表、§7.11 冻结规格） |
 | 编码风格约束（Google 原教裁决、存量迁移、clang-format） | `docs/skill/arhud-coding-style/SKILL.md` + 根 `.clang-format` |
-| 历史 ADR（0001 Route B ~ 0010 命令绑定调用/全局平铺） | `_archive/docs/adr/`（只增不改的历史记录） |
-| 历史 devlog / 流程文档 / 设计 skill | `_archive/docs/`、`_archive/skill/` |
+| 历史 ADR（0001 Route B ~ 0010）/ devlog / 流程 / 旧设计 skill | git 历史（提交 `61eb290` 的 `_archive/`，其后已删除；`git show 61eb290:_archive/docs/adr/README.md` 等按需取阅） |
 
-**变更义务**：代码改动若影响 architecture.md 描述的结构/契约/阶段状态，同一提交内更新该文档的 ✅/🎯 标记；
+**变更义务**：代码改动若影响设计 skill 描述的结构/契约/阶段状态，同一提交内更新该文档的 ✅/🎯 标记；
 触及 §7.11 冻结接口（RenderingServer 虚表、`PushBound` 签名）时，先改文档、经确认后再改代码。

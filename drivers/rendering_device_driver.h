@@ -78,6 +78,11 @@
  *   |                       |        | 契约；生产零拷贝路径不用。B3 后应移出 |
  *   |                       |        | 契约（降为 GL 实现私有或归            |
  *   |                       |        | IFramePresenter 家族）—— 已立项待执行 |
+ *   | Texture*External 族   | 活     | 模式 X（零回读上屏）：显示侧分配的帧  |
+ *   |                       |        | 缓冲别名成本后端可写纹理（GL 实现走    |
+ *   |                       |        | WGL_NV_DX_interop2）；Begin/EndWrite   |
+ *   |                       |        | 是唯一跨 API 同步点。Vulkan 映射     |
+ *   |                       |        | VK_EXT_external_memory_* 原生       |
  *   | ShaderCreateFromSource  | 已改   | 治理 P1 已执行（2026-09-27）：改名 + |
  *   |                       |        | 加 ShaderSourceFormat 参数（kGLSL/     |
  *   |                       |        | kSPIRV），GLSL 命名泄漏已消除 |
@@ -287,6 +292,71 @@ class IRenderingDeviceDriver {
    */
   virtual BitField<TextureUsageBits> TextureGetUsagesSupportedByFormat(
       DataFormat p_format, bool p_cpu_readable) = 0;
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Texture 管理——外部资源导入（零拷贝上屏，Mode X）
+  //
+  // 帧缓冲归显示侧（platform::ISharedFramePool）分配，渲染侧把它
+  // 别名成本后端的可写纹理，于是"一帧的像素"从不离开显存：
+  // 上屏线程只提交该显存，不读 CPU。默认实现全部不可用，
+  // 调用方据 SupportsExternalTexture() 回落 Mode R。
+  //
+  // 时序契约（后端必须实现为显式同步点）：
+  //   BeginWrite → 写 → EndWrite，且 Begin/End 与 GPU 命令同线程；
+  //   EndWrite 返回后，显示侧才可读该资源。
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * @brief 本后端是否支持外部 GPU 资源导入
+   *
+   * @par 默认 false；GL 后端在 WGL_NV_DX_interop2 入口点可装载
+   *      且与帧池的 GPU device 同适配器时为 true（探测发生在
+   *      首次 TextureCreateExternal，此前返回保守值 false）。
+   *
+   * @return true 可调用 TextureCreateExternal
+   */
+  virtual bool SupportsExternalTexture() const {
+    return false;
+  }
+
+  /**
+   * @brief 以外部 GPU 资源创建纹理（不分配显存）
+   *
+   * 返回的 TextureID 与 TextureCreate 的产物同构，可直接作为
+   * Framebuffer 附件（可挂 DEPTH 之外的颜色附件）。
+   *
+   * @param[in] p_source 外部资源描述（须 IsValid()）
+   *
+   * @return 纹理 ID；不支持、参数无效或别名建立失败返回空 ID
+   *
+   * @pre 调用线程持有当前 GL/图形上下文
+   */
+  virtual TextureID TextureCreateExternal(
+      const ExternalTextureSource& p_source) {
+    (void)p_source;
+    return TextureID();
+  }
+
+  /**
+   * @brief 开始写外部导入纹理（跨 API 同步点：显示侧 → 渲染侧）
+   *
+   * @param[in] p_texture TextureCreateExternal 的产物
+   *
+   * @return true 已锁定，可写；false 锁定失败（本帧须跳过或回落）
+   */
+  virtual bool TextureExternalBeginWrite(TextureID p_texture) {
+    (void)p_texture;
+    return false;
+  }
+
+  /**
+   * @brief 结束写外部导入纹理（渲染侧 → 显示侧，归还所有权）
+   *
+   * @param[in] p_texture TextureCreateExternal 的产物
+   */
+  virtual void TextureExternalEndWrite(TextureID p_texture) {
+    (void)p_texture;
+  }
 
   // ═══════════════════════════════════════════════════════════════════
   // Sampler 管理

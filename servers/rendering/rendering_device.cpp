@@ -547,6 +547,129 @@ void RenderingDevice::TextureFree(RDTextureID p_texture) {
 }
 
 /**
+ * @brief 以显示侧显存导入 Texture（Mode X 零拷贝上屏）
+ *
+ * @par 流程
+ *   1. RDD::TextureCreateExternal 建立后端别名（不分配显存）
+ *   2. Texture 簿记照 TextureCreate 的形态构造——RenderPass 兼容性
+ *      与 FBO 附件推断都读 format，故必须填齐 width/height/format/type
+ *   3. vram_usage_ 照常累加：显存确实被本后端使用，只是不归它拥有，
+ *      与 FreeTextureDriverResource 的无条件扣减保持平衡
+ *
+ * @param[in] p_source 外部资源描述
+ *
+ * @return Texture RID；不支持或导入失败返回空 RID
+ */
+RDTextureID RenderingDevice::TextureCreateExternal(
+    const ExternalTextureSource& p_source) {
+  ARHUD_ASSERT(initialized_, "RenderingDevice not initialized");
+
+  // 同 TextureCreate 的线程闸门：GL 上下文归渲染线程，初始化期
+  // command_queue_ 尚未绑定时允许主线程直调
+  ARHUD_ASSERT(IsRenderThread() || command_queue_ == nullptr,
+               "RenderingDevice::TextureCreateExternal must run on the render "
+               "thread");
+
+  if (!p_source.IsValid()) {
+    ARHUD_LOG_ERROR("kInvalidParameter",
+                    "RenderingDevice::TextureCreateExternal() invalid source");
+    return RDTextureID();
+  }
+
+  TextureID driver_id = device_driver_->TextureCreateExternal(p_source);
+  if (!driver_id.IsValid()) {
+    // 不支持/探测失败是环境事实（回落 Mode R 由调用方决定），
+    // 用 Info 级避免在探测期刷错误日志
+    ARHUD_LOG_INFO(
+        "RenderingDevice::TextureCreateExternal() driver unavailable — "
+        "caller should fall back to readback present path");
+    return RDTextureID();
+  }
+
+  TextureFormat format;
+  format.format = p_source.format;
+  format.width = p_source.width;
+  format.height = p_source.height;
+  format.texture_type = TextureType::k2D;
+  format.mipmaps = 1;
+  format.usage.SetFlag(TextureUsageBits::kColorAttachment);
+  // 存储由平台侧拥有且每帧整体覆写：内容无需跨帧保留
+  format.is_discardable = true;
+
+  auto* tex = ARHUD_NEW(Texture);
+  tex->driver_id = driver_id;
+  tex->format = format;
+
+  vram_usage_ += EstimateTextureVram(p_source.width, p_source.height,
+                                     p_source.format, 1);
+
+  RID rid = texture_owner_.MakeRid(tex);
+  return RDTextureID(rid);
+}
+
+/**
+ * @brief 立即释放 Texture（跳过帧槽延迟）
+ *
+ * @param[in] p_texture Texture RID（空 RID 静默忽略）
+ *
+ * @pre 该资源无在途 GPU 引用（外部导入纹理由
+ *      FrameImageQueue::HasInFlight == false 保证）
+ */
+void RenderingDevice::TextureFreeImmediate(RDTextureID p_texture) {
+  ARHUD_ASSERT(initialized_, "RenderingDevice not initialized");
+
+  if (p_texture.IsNull()) {
+    return;
+  }
+  FreeTextureDriverResource(p_texture.GetRid());
+}
+
+/**
+ * @brief 开始写外部导入纹理（跨 API 锁定）
+ *
+ * @param[in] p_texture Texture RID
+ * @return true 已取得绘制权；false 非外部纹理或锁定失败（本帧须跳过）
+ */
+bool RenderingDevice::TextureExternalBeginWrite(RDTextureID p_texture) {
+  ARHUD_ASSERT(initialized_, "RenderingDevice not initialized");
+
+  if (p_texture.IsNull()) {
+    return false;
+  }
+  const Texture* tex = texture_owner_.GetOrNull(p_texture.GetRid());
+  if (tex == nullptr) {
+    return false;
+  }
+  return device_driver_->TextureExternalBeginWrite(tex->driver_id);
+}
+
+/**
+ * @brief 结束写外部导入纹理（交还显示侧）
+ *
+ * @param[in] p_texture Texture RID
+ */
+void RenderingDevice::TextureExternalEndWrite(RDTextureID p_texture) {
+  ARHUD_ASSERT(initialized_, "RenderingDevice not initialized");
+
+  if (p_texture.IsNull()) {
+    return;
+  }
+  const Texture* tex = texture_owner_.GetOrNull(p_texture.GetRid());
+  if (tex == nullptr) {
+    return;
+  }
+  device_driver_->TextureExternalEndWrite(tex->driver_id);
+}
+
+/** @brief 后端是否已确认可导入外部显存 */
+bool RenderingDevice::SupportsExternalTexture() const {
+  if (device_driver_ == nullptr) {
+    return false;
+  }
+  return device_driver_->SupportsExternalTexture();
+}
+
+/**
  * @brief 获取 Texture 的驱动层 ID
  *
  * 通过 RID 查找 texture_owner_ 中的簿记结构，返回对应的驱动层 TextureID。

@@ -760,6 +760,60 @@ class RenderingDevice {
   void TextureFree(RDTextureID p_texture);
 
   /**
+   * @brief 以显示侧显存导入 Texture（Mode X 零拷贝上屏，不分配存储）
+   *
+   * @par 与 TextureCreate 的差别
+   *   显存归 platform::ISharedFramePool 拥有，本方法只建立后端别名，
+   *   因此必须用 TextureFreeImmediate 释放（帧槽延迟释放对"外部资源"
+   *   不安全：平台侧可能在别名仍存在时重建该显存，例如 resize）。
+   *   统计口径上**仍计入 vram_usage_**——显存确实被本后端使用，
+   *   只是所有权不在 RD。
+   *
+   * @param[in] p_source 外部资源描述（须 IsValid()）
+   *
+   * @return Texture RID，可作 FBO 颜色附件；不支持或失败返回空 RID
+   *
+   * @pre 调用线程持有 current GL 上下文（初始化期主线程或渲染线程）
+   */
+  RDTextureID TextureCreateExternal(const ExternalTextureSource& p_source);
+
+  /**
+   * @brief 立即释放 Texture（跳过帧槽延迟）
+   *
+   * @par 存在理由
+   *   外部导入纹理的后端别名必须在平台侧归还显存之前解除，而默认
+   *   TextureFree 要等 frame_count 帧才真正落到驱动。本方法仅在
+   *   "该资源无在途 GPU 引用"时可用（共享显存路径由
+   *   FrameImageQueue::HasInFlight == false 保证）。
+   *
+   * @param[in] p_texture Texture RID（空 RID 静默忽略）
+   */
+  void TextureFreeImmediate(RDTextureID p_texture);
+
+  /**
+   * @brief 开始写外部导入纹理（跨 API 锁定，渲染线程）
+   *
+   * @param[in] p_texture TextureCreateExternal 的产物
+   * @return true 已取得绘制权
+   */
+  bool TextureExternalBeginWrite(RDTextureID p_texture);
+
+  /**
+   * @brief 结束写外部导入纹理（交还显示侧，渲染线程）
+   *
+   * @param[in] p_texture TextureCreateExternal 的产物
+   */
+  void TextureExternalEndWrite(RDTextureID p_texture);
+
+  /**
+   * @brief 后端是否已确认可导入外部显存
+   *
+   * @return true 探测成功；false 尚未探测或不可用（以
+   *         TextureCreateExternal 的实际结果为准）
+   */
+  bool SupportsExternalTexture() const;
+
+  /**
    * @brief 获取 Texture 的驱动层 ID
    *
    * @param[in] p_texture Texture RID

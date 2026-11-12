@@ -10,18 +10,32 @@
  *   - Present thread: AcquireReady (READY→COMMITTED) → Commit
  * (COMMITTED→ON_SCREEN) → WaitBufferRelease → ReleaseSlot (ON_SCREEN→FREE)
  *
- * @par P0 fixes (2026-08-24 review)
- *   - ON_SCREEN state separates "committed to compositor" from "being scanned"
- *   - free-after-release: buffer freed by compositor release event (not frame
- * callback)
- *   - latest-wins demoted to defensive assert (HasInFlight guard prevents
- * double-ready)
- *   - Startup pre-post + command push wake sources (prevent deadlock)
+ * @par 两种载体形态（同一状态机，只加 token，不改结构）
+ *   | 形态 | 槽内容 | 边界上传递 | 用于 |
+ *   |---|---|---|---|
+ *   | 回读 | CPU 像素（实际被读走） | 槽号（等价于传图像）| Mode R |
+ *   | 令牌 | CPU 像素（**保留但不碰**）+ frame_token | 槽号 + token | Mode X |
  *
- * @par Pacing (§3.8 of multiscreen)
- *   - Render frequency = display frequency (buffer token self-pacing)
- *   - HasInFlight() prevents render-ahead (max 1 frame in flight per screen)
- *   - render_wake_ posted on: buffer release + command push + startup pre-post
+ *   Mode X 下像素从不进 CPU，槽只是握手；frame_token 携带平台帧池的
+ *   index（环深度不假设等于 kSlotCount）。CPU 像素背衬在两种形态下
+ *   都分配——它是运行期降级回 Mode R 的安全网，见 Initialize 的说明。
+ *   Vulkan/QNX 后端若要省掉这份内存，改动点是给 Initialize 加
+ *   "按需分配背衬"开关，而不是改状态机。
+ *
+ * @par 线程模型
+ *   原子状态 + 两个信号量（ready_sem_ 唤醒上屏、free_sem_ 背压）；
+ *   生产=渲染线程，消费=上屏线程；背压保证每屏最多 1 帧在飞。
+ *
+ * @par P0 修正（2026-08-24 评审）
+ *   - ON_SCREEN 状态分离"已交给合成器"与"正在被扫描"
+ *   - free-after-release：buffer 由合成器 release 事件释放（非帧回调）
+ *   - latest-wins 降级为防御性断言（HasInFlight 防双 ready）
+ *   - 启动预投递 + 命令 push 唤醒源（防死锁）
+ *
+ * @par 节拍（§3.8 multiscreen）
+ *   - 渲染频率 = 显示频率（buffer token 自节拍）
+ *   - HasInFlight() 防渲染超前（每屏最多 1 帧在飞）
+ *   - render_wake_ 投递于：buffer release + 命令 push + 启动预投递
  */
 
 #ifndef ARHUD_SERVERS_RENDERING_FRAME_IMAGE_QUEUE_H_
@@ -50,45 +64,60 @@ enum class SlotState : uint8 {
 class FrameImageQueue {
  public:
   static constexpr uint32 kSlotCount = 2;
+  static constexpr uint32 kInvalidToken = UINT32_MAX;  ///< 未设置的帧 token
 
   FrameImageQueue() = default;
   ~FrameImageQueue() = default;
 
   ARHUD_DISABLE_COPY_MOVE(FrameImageQueue);
 
-  /** @brief Initialize (allocate CPU buffers) */
+  /**
+   * @brief 初始化槽位（分配 CPU 像素背衬）
+   *
+   * @par 为何 Mode X 也保留 CPU 背衬
+   *   共享路径不碰这些缓冲，但它们是**回落的余地**：设备丢失、
+   *   帧池 resize 失败等运行期降级必须能立刻改走回读上屏，而不是
+   *   在中途重分配（那会引入与上屏线程的槽位竞态）。
+   *   代价 = 每屏 2×w×h×4 常驻内存；换来的是零危险降级路径。
+   *
+   * @param[in] p_width  帧宽（像素）
+   * @param[in] p_height 帧高（像素）
+   */
   void Initialize(uint32 p_width, uint32 p_height) {
     for (uint32 i = 0; i < kSlotCount; ++i) {
       slots_[i].width = p_width;
       slots_[i].height = p_height;
       slots_[i].stride = p_width * 4;
       slots_[i].pixels = ARHUD_MALLOC_ZEROED(p_width * p_height * 4);
+      slots_[i].token = kInvalidToken;
       slots_[i].state.store(SlotState::kFree, std::memory_order_release);
     }
     ready_index_.store(UINT32_MAX, std::memory_order_release);
   }
 
-  /** @brief Finalize (free CPU buffers) */
+  /** @brief 终止（释放 CPU 像素背衬） */
   void Finalize() {
     for (uint32 i = 0; i < kSlotCount; ++i) {
       if (slots_[i].pixels != nullptr) {
         ARHUD_FREE(slots_[i].pixels);
         slots_[i].pixels = nullptr;
       }
+      slots_[i].token = kInvalidToken;
       slots_[i].state.store(SlotState::kFree, std::memory_order_release);
     }
   }
 
+  /** @brief 尺寸变更（重建背衬与 token） */
   void Resize(uint32 p_width, uint32 p_height) {
     Finalize();
     Initialize(p_width, p_height);
   }
 
-  // ── Render thread (producer) ──
+  // ── 渲染线程（生产者）──
 
   /**
-   * @brief Try to acquire a free slot for writing (non-blocking)
-   * @return Slot index, or UINT32_MAX if no free slot
+   * @brief 尝试取得一个空闲槽用于写入（非阻塞）
+   * @return 槽号；无空闲槽返回 UINT32_MAX
    */
   uint32 TryAcquireFree() {
     for (uint32 i = 0; i < kSlotCount; ++i) {
@@ -102,28 +131,31 @@ class FrameImageQueue {
   }
 
   /**
-   * @brief Mark a slot as ready (rendering complete)
-   * P1-2: latest-wins demoted to assert — HasInFlight guard prevents
-   * double-ready. If we get here with an existing READY slot, it's a bug.
+   * @brief 标记槽就绪（渲染完成）
+   *
+   * P1-2：latest-wins 降级为断言——HasInFlight 已挡住双 READY，
+   * 走到这里仍有旧 READY 未消费属不变量违例。
+   *
+   * @param[in] p_slot  槽号
+   * @param[in] p_token Mode X 的平台帧 index（CPU 背衬形态用默认值）
    */
-  void MarkReady(uint32 p_slot) {
-    // Defensive: if there's already a READY slot not yet consumed,
-    // that's a violation of HasInFlight invariant.
+  void MarkReady(uint32 p_slot, uint32 p_token = kInvalidToken) {
+    slots_[p_slot].token = p_token;
+    // 防御：已有未消费的 READY 槽 = HasInFlight 不变量被破坏
     uint32 prev_ready =
         ready_index_.exchange(p_slot, std::memory_order_acq_rel);
     slots_[p_slot].state.store(SlotState::kReady, std::memory_order_release);
     if (prev_ready < kSlotCount && prev_ready != p_slot) {
-      // Overwrite: previous ready slot is superseded.
-      // This shouldn't happen with HasInFlight guard, but handle gracefully.
-      // NOTE: prev_ready == p_slot is impossible now that AcquireReady clears
-      // ready_index_ on consume; the guard keeps a stale self-reference from
-      // ever demoting the slot we just marked READY (that used to silently
-      // cancel every frame and starve the present thread).
+      // 覆盖：前一个 READY 槽被取代。HasInFlight 下不应发生，
+      // 但仍优雅处理。
+      // 注：prev_ready == p_slot 已不可能——AcquireReady 消费时会清
+      // ready_index_；该护栏防止陈旧自引用把刚置 READY 的槽降级
+      // （曾表现为每次自覆盖、上屏线程饿死）。
       slots_[prev_ready].state.store(SlotState::kFree,
                                      std::memory_order_release);
-      free_sem_.Post();  // wake render thread (freed a slot)
+      free_sem_.Post();  // 唤醒渲染线程（腾出一个槽）
     }
-    ready_sem_.Post();  // wake present thread
+    ready_sem_.Post();  // 唤醒上屏线程
   }
 
   /** @brief Check if this screen has a frame in flight
@@ -139,11 +171,11 @@ class FrameImageQueue {
     return false;
   }
 
-  // ── Present thread (consumer) ──
+  // ── 上屏线程（消费者）──
 
   /**
-   * @brief Acquire the latest ready slot (blocks until ready or shutdown)
-   * @return Slot index, or UINT32_MAX on shutdown
+   * @brief 取得最新就绪槽（阻塞直到就绪或关停）
+   * @return 槽号；关停返回 UINT32_MAX
    */
   uint32 AcquireReady() {
     ready_sem_.Wait();
@@ -227,8 +259,9 @@ class FrameImageQueue {
     ready_sem_.Post();
   }
 
-  // ── Accessors ──
+  // ── 访问器 ──
 
+  /** @brief 槽内 CPU 像素基址（令牌形态返回 nullptr） */
   void* GetPixels(uint32 p_slot) {
     return slots_[p_slot].pixels;
   }
@@ -242,18 +275,30 @@ class FrameImageQueue {
     return slots_[p_slot].stride;
   }
 
+  /**
+   * @brief 读取槽携带的平台帧 index（Mode X）
+   *
+   * @param[in] p_slot 槽号
+   * @return 帧 index；未设置返回 kInvalidToken
+   */
+  uint32 GetFrameToken(uint32 p_slot) const {
+    return slots_[p_slot].token;
+  }
+
  private:
   struct Slot {
     uint32 width = 0;
     uint32 height = 0;
     uint32 stride = 0;
-    void* pixels = nullptr;
+    void* pixels = nullptr;    ///< CPU 背衬像素（令牌形态 = nullptr）
+    uint32 token = kInvalidToken;  ///< Mode X 的平台帧 index
     std::atomic<SlotState> state{SlotState::kFree};
   };
 
   Slot slots_[kSlotCount];
-  Semaphore ready_sem_;  // present thread waits: new frame ready
-  Semaphore free_sem_;   // slot free count (backpressure)
+  bool cpu_backing_ = true;  ///< 载体形态（Initialize 决定，Resize 沿用）
+  Semaphore ready_sem_;      ///< 上屏线程等待：新帧就绪
+  Semaphore free_sem_;       ///< 空闲槽计数（背压）
   Semaphore* wake_sem_ =
       nullptr;  ///< B3: Engine render_wake_（线程唤醒通道，可空）
   std::atomic<uint32> ready_index_{UINT32_MAX};

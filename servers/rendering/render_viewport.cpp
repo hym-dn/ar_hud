@@ -15,6 +15,7 @@
 
 #include "render_viewport.h"
 
+#include <chrono>
 #include <cstring>
 
 #include "draw_list_scope.h"
@@ -25,6 +26,17 @@
 #include "storage/shader_storage.h"
 
 namespace arhud {
+namespace {
+
+/** @brief 单调时钟微秒读数（呈现路径统计用） */
+uint64 NowUs() {
+  return static_cast<uint64>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+}  // namespace
 
 RenderViewport::~RenderViewport() {
   if (initialized_) {
@@ -60,16 +72,8 @@ Error RenderViewport::Initialize(IRenderingContextDriver* p_context_driver,
   // B3-M0.3: per-screen GDI 上屏器（Engine 创建，RenderViewport 只持有指针）
   presenter_ = p_stack_refs.presenter;
 
-  // B3-M0.3: 分配 CPU 回读缓冲（width * height * 4 bytes RGBA8）
-  if (width_ > 0 && height_ > 0) {
-    cpu_buffer_size_ = width_ * height_ * 4;
-    cpu_buffer_ = static_cast<uint8*>(ARHUD_MALLOC_ZEROED(cpu_buffer_size_));
-    if (cpu_buffer_ == nullptr) {
-      ARHUD_LOG_ERROR("kOutOfMemory",
-                      "RenderViewport::Initialize() cpu_buffer_ alloc failed");
-      return Error::kOutOfMemory;
-    }
-  }
+  // Mode X: per-screen 共享显存帧池（Engine 创建；null = 走回读路径）
+  shared_pool_ = p_stack_refs.shared_pool;
 
   Error err = InitializePostProcess();
   if (err != Error::kOK) {
@@ -77,12 +81,15 @@ Error RenderViewport::Initialize(IRenderingContextDriver* p_context_driver,
     ARHUD_LOG_ERROR("kFailed",
                     "RenderViewport::Initialize() scene_buffers_ creation "
                     "failed, cannot render");
-    if (cpu_buffer_ != nullptr) {
-      ARHUD_FREE(cpu_buffer_);
-      cpu_buffer_ = nullptr;
-      cpu_buffer_size_ = 0;
-    }
     return Error::kFailed;
+  }
+
+  // Mode X: 帧池可用 + composite 就绪 → 导入每帧共享目标；失败静默回落
+  // 回读形态（CPU 像素归 FrameImageQueue 槽，本类不再自持回读缓冲）
+  if (InitializeSharedPath()) {
+    ARHUD_LOG_INFO(
+        "RenderViewport: shared-VRAM present path active (frames=%u)",
+        shared_frame_count_);
   }
 
   initialized_ = true;
@@ -96,20 +103,24 @@ void RenderViewport::Finalize() {
     return;
   }
 
+  // Mode X 先撤：导入解除后，平台帧池才可以安全释放其显存
+  // （Engine 的拆卸顺序保证 pool->Finalize 晚于本函数）
+  FinalizeSharedPath();
+
   FinalizePostProcess();
 
-  // B3-M0.3: 释放 CPU 回读缓冲（presenter 由 ARHudEngine 拥有，此处不
-  // finalize）
-  if (cpu_buffer_ != nullptr) {
-    ARHUD_FREE(cpu_buffer_);
-    cpu_buffer_ = nullptr;
-    cpu_buffer_size_ = 0;
-  }
+  // presenter / 帧池均由 ARHudEngine 拥有，此处只断引用不 finalize
   presenter_ = nullptr;
+  shared_pool_ = nullptr;
 
   context_driver_ = nullptr;
   initialized_ = false;
-  ARHUD_LOG_INFO("RenderViewport finalized");
+  ARHUD_LOG_INFO(
+      "RenderViewport finalized (present path: shared=%u frames zero-copy, "
+      "readback=%u frames/%llu MB/%.1f ms GPU->CPU)",
+      shared_frames_, static_cast<uint32>(readback_frames_),
+      static_cast<unsigned long long>(readback_bytes_ / (1024 * 1024)),
+      static_cast<float64>(readback_us_) / 1000.0);
 }
 
 bool RenderViewport::IsInitialized() const {
@@ -388,6 +399,13 @@ bool RenderViewport::ApplyPendingResize() {
     return false;
   }
 
+  // 0. Mode X：先撤销共享目标（解除 interop 别名），平台侧才能换显存
+  //    顺序：解除导入 → pool.Resize → 重新导入
+  const bool was_shared = shared_path_active_;
+  if (was_shared) {
+    FinalizeSharedPath();
+  }
+
   // 1. 重建 FBO（颜色/深度/RenderPass/Framebuffer）
   Error err = scene_buffers_.Recreate(rd_, new_w, new_h);
   if (err != Error::kOK) {
@@ -425,22 +443,46 @@ bool RenderViewport::ApplyPendingResize() {
     }
   }
 
+  // 4. Mode X：显存换新尺寸后重新导入（失败即此后走回读——
+  //    CPU 槽一直在，降级不需要重建队列）
+  if (was_shared) {
+    if (shared_pool_ != nullptr) {
+      shared_pool_->Resize(new_w, new_h);
+    }
+    if (!InitializeSharedPath()) {
+      ARHUD_LOG_WARN(
+          "RenderViewport: shared present disabled after resize — "
+          "readback path takes over (%ux%u)",
+          new_w, new_h);
+    }
+  }
+
   resize_pending_.store(false, std::memory_order_release);
   ARHUD_LOG_INFO("RenderViewport resized to %ux%u", new_w, new_h);
   return true;
 }
 
 /**
- * @brief B3: 渲染线程单屏渲染入口（原 RecordRender + ReadbackAndMarkReady
- * 合并）
+ * @brief 渲染线程单屏渲染入口（两条呈现路径共用）
  *
- * @par 调用方（RenderThreadFunc，本屏归属渲染线程）
- *   1. dirty 检查（ItemStorage 全局 dirty；false = 静态内容零成本跳过）
- *   2. HasInFlight 防渲染超前（§3.8：每屏最多 1 帧在途 = 精确 1 帧延迟）
- *   3. TryAcquireFree（FREE→WRITING；无 free 槽跳过）
- *   4. RenderFromStorage（本线程读 ItemStorage —— B3 起读写同线程）
- *   5. FramebufferReadback（FBO → CPU 槽）
- *   6. MarkReady（READY；唤醒 present 线程）
+ * @par Mode X（共享显存，零回读）
+ *   1. dirty 检查（静态内容零成本跳过）
+ *   2. HasInFlight 背压（§3.8：每屏最多 1 帧在途）
+ *   3. BeginWrite 取本帧共享显存的绘制权——失败即本轮跳过（显示侧
+ *      仍在读，脏位保留下轮重试；这是池环与队列背压之外的第三道闸）
+ *   4. TryAcquireFree（无空闲槽则交还绘制权后跳过）
+ *   5. RenderFromStorage：场景 pass 渲进 scene_buffers_，composite
+ *      经 composite_override_ 直写共享显存（distortion/gamma 不丢）
+ *   6. EndWrite 交还绘制权 → MarkReady(slot, frame_index)
+ *   —— 全帧零 CPU 拷贝；本函数内没有任何回读调用。
+ *
+ * @par Mode R（回读，回落路径）
+ *   步骤同上但跳过 3/6，第 5 步 composite 写 post_buffers_，
+ *   随后 FramebufferReadback 把 FBO 像素写进队列 CPU 槽，
+ *   MarkReady(slot)（token = kInvalidToken，上屏线程据此走 Present）。
+ *
+ * @return true 本屏本轮真正完成"渲染 + 提交"（引擎可清本屏脏位）；
+ *         false 未脏或背压跳过（脏位保留，下一轮 submit 重试）
  */
 bool RenderViewport::RenderAndSubmit() {
   if (!initialized_ || queue_ == nullptr || item_storage_ == nullptr) {
@@ -457,30 +499,68 @@ bool RenderViewport::RenderAndSubmit() {
     return false;
   }
 
-  // 2. Backpressure: skip if frame in flight (anti render-ahead, §3.8)
+  // 2. 背压：有在途帧则跳过（防渲染超前，§3.8）
   if (queue_->HasInFlight()) {
     return false;
   }
 
-  // 3. Acquire slot (FREE→WRITING)
+  // 3. Mode X：取本帧共享显存的绘制权
+  //    池在运行期失效（设备丢失等）时这里不进入共享分支，自动
+  //    落到下面的回读路径——CPU 槽始终存在，降级不需要重分配。
+  RenderBuffers* shared_target = nullptr;
+  uint32 shared_index = ISharedFramePool::kInvalidFrame;
+  if (shared_path_active_ && shared_pool_ != nullptr &&
+      shared_pool_->IsAvailable()) {
+    shared_index = shared_write_cursor_;
+    shared_write_cursor_ = (shared_write_cursor_ + 1) % shared_frame_count_;
+    if (rd_->TextureExternalBeginWrite(
+            shared_targets_[shared_index].color_texture)) {
+      shared_target = &shared_targets_[shared_index];
+    } else {
+      // 锁定失败 = 显示侧仍占用该帧；游标已推进，下轮自然轮到别的帧
+      return false;
+    }
+  }
+
+  // 4. 取空闲槽（FREE→WRITING）
   uint32 slot = queue_->TryAcquireFree();
   if (slot == UINT32_MAX) {
+    if (shared_target != nullptr) {
+      rd_->TextureExternalEndWrite(shared_target->color_texture);
+    }
     return false;
   }
 
-  // 4. Render scene to FBO (same-thread read of ItemStorage)
+  // 5. 渲场景；composite 输出目标由呈现路径决定
+  composite_override_ =
+      shared_target != nullptr ? shared_target->framebuffer : RDFramebufferID();
   RenderFromStorage();
+  composite_override_ = RDFramebufferID();
 
-  // 5. Readback FBO → CPU slot (post-process enabled: composite output;
-  // otherwise read the scene FBO directly).
+  if (shared_target != nullptr) {
+    // 6a. Mode X：交还绘制权（GPU 侧写完可见）+ 提交帧 index
+    //     token = 平台帧池的 index，上屏线程据此 CommitFrame；
+    //     "显示侧读完了这块显存"的保证由下一次 BeginWrite 的跨驱动
+    //     同步点兑现（见 platform/windows/dxgi_shared_frame_pool_win32）
+    rd_->TextureExternalEndWrite(shared_target->color_texture);
+    queue_->MarkReady(slot, shared_index);
+    ++shared_frames_;
+    return true;
+  }
+
+  // 6b. Mode R：回读 FBO → CPU 槽（开后处理时取 composite 输出，
+  //     否则直接取场景 FBO）
   const RDFramebufferID readback_fb =
       (post_process_enabled_ && post_buffers_.IsValid())
           ? post_buffers_.framebuffer
           : scene_buffers_.framebuffer;
+  const uint64 t0 = NowUs();
   rd_->FramebufferReadback(readback_fb, 0, 0, width_, height_,
                            queue_->GetPixels(slot));
+  readback_us_ += NowUs() - t0;
+  ++readback_frames_;
+  readback_bytes_ += static_cast<uint64>(width_) * height_ * 4;
 
-  // 6. Mark READY (wakes present thread)
   queue_->MarkReady(slot);
   return true;
 }
@@ -730,6 +810,147 @@ fail_pipeline:
   return Error::kOK;
 }
 
+/**
+ * @brief 建立共享显存呈现路径（导入帧池每一帧为可写渲染目标）
+ *
+ * @par 成立条件（任一不满足 → 返回 false，Mode R 原样生效）
+ *   1. 平台给了帧池且 `IsAvailable()`；
+ *   2. composite pass 可用——共享形态必须有一次全屏 pass 把场景
+ *      写进共享显存（distortion/gamma 也因此不丢）；
+ *   3. 后端能把外部显存导入成 GL 纹理（本调用即真实探测：
+ *      WGL_NV_DX_interop2 缺失、跨适配器、驱动不支持 DX11 资源
+ *      都在这里暴露）；
+ *   4. 每帧的目标 FBO 建成（FBO 完整性失败会在 RD 侧告警）。
+ *
+ * @par 全有或全无
+ *   中途失败即整体撤销（FinalizeSharedPath），不留半共享状态——
+ *   否则上屏线程按 token 提交会对着不存在的目标等下去。
+ *
+ * @pre 已 InitializePostProcess（scene/post buffers 与 composite pipeline 就绪）
+ * @pre 调用线程持有 current GL 上下文（初始化期主线程即满足）
+ *
+ * @return true 共享路径就绪
+ */
+bool RenderViewport::InitializeSharedPath() {
+  shared_path_active_ = false;
+  shared_frame_count_ = 0;
+  shared_write_cursor_ = 0;
+
+  if (shared_pool_ == nullptr || !shared_pool_->IsAvailable()) {
+    return false;
+  }
+  if (!post_process_enabled_ || !post_buffers_.IsValid()) {
+    ARHUD_LOG_INFO(
+        "RenderViewport: shared present skipped (composite unavailable) — "
+        "readback path");
+    return false;
+  }
+
+  const uint32 frames = shared_pool_->GetFrameCount();
+  if (frames == 0 || frames > kMaxSharedFrames) {
+    ARHUD_LOG_WARN("RenderViewport: frame pool count %u unsupported (max %u)",
+                   frames, kMaxSharedFrames);
+    return false;
+  }
+
+  const uint32 pool_width = shared_pool_->GetFrame(0).width;
+  const uint32 pool_height = shared_pool_->GetFrame(0).height;
+  if (pool_width != width_ || pool_height != height_) {
+    // 尺寸不一致 = 装配错误（帧池与视口不同步），必须回退而不是画歪
+    ARHUD_LOG_WARN(
+        "RenderViewport: frame pool size %ux%u != viewport %ux%u — "
+        "readback fallback",
+        pool_width, pool_height, width_.load(), height_.load());
+    return false;
+  }
+
+  for (uint32 i = 0; i < frames; ++i) {
+    const ISharedFramePool::Frame frame = shared_pool_->GetFrame(i);
+    if (!frame.IsValid()) {
+      ARHUD_LOG_WARN("RenderViewport: frame %u invalid — readback fallback", i);
+      FinalizeSharedPath();
+      return false;
+    }
+
+    ExternalTextureSource source;
+    source.native_device = frame.native_device;
+    source.native_resource = frame.native_resource;
+    source.width = frame.width;
+    source.height = frame.height;
+    source.writable = true;
+    // 格式翻译只在这一处发生（platform 词表 → DataFormat）；
+    // 后端不支持该组合格式时 TextureCreateExternal 返回空 RID。
+    source.format = (frame.format == SharedFrameFormat::kRgba8Unorm)
+                        ? DataFormat::kR8G8B8A8Unorm
+                        : DataFormat::kMax;
+
+    RDTextureID color = rd_->TextureCreateExternal(source);
+    if (color.IsNull()) {
+      // 探测失败（扩展缺失/跨适配器/驱动不支持）：整体回退
+      FinalizeSharedPath();
+      ARHUD_LOG_INFO(
+          "RenderViewport: shared present unavailable on this driver — "
+          "readback path");
+      return false;
+    }
+
+    // interop 规定"关联 DX 资源的 GL 对象，使用前必须先加锁"——
+    // 未锁时该 GL 纹理没有可视化的 data store，挂进 FBO 会得到
+    // GL_FRAMEBUFFER_UNSUPPORTED。故附件建立也在锁内完成。
+    const bool locked = rd_->TextureExternalBeginWrite(color);
+    if (!locked) {
+      ARHUD_LOG_WARN(
+          "RenderViewport: shared frame %u could not be locked for FBO "
+          "assembly — readback fallback",
+          i);
+      FinalizeSharedPath();
+      return false;
+    }
+
+    const Error create_err = shared_targets_[i].CreateExternal(
+        rd_, color, frame.width, frame.height, source.format);
+    rd_->TextureExternalEndWrite(color);
+
+    if (create_err != Error::kOK) {
+      FinalizeSharedPath();
+      ARHUD_LOG_WARN(
+          "RenderViewport: shared target %u create failed — readback fallback",
+          i);
+      return false;
+    }
+  }
+
+  shared_frame_count_ = frames;
+  shared_path_active_ = true;
+  ARHUD_LOG_INFO("RenderViewport: shared-VRAM present path ready (%ux%u, "
+                 "frames=%u, pool=%s)",
+                 width_.load(), height_.load(), frames,
+                 shared_pool_->GetBackendName());
+  return true;
+}
+
+/**
+ * @brief 撤销共享显存呈现路径
+ *
+ * @par 释放顺序（不可交换）
+ *   先 Destroy 目标（内部走 TextureFreeImmediate → 解除 interop 别名），
+ *   平台侧此后才允许释放/重建那批显存。引擎拆卸顺序：
+ *   本函数（screens）→ rd.Finalize（内含 wglDXCloseDeviceNV）→
+ *   pool.Finalize。反序会让 interop 关闭时面对已销毁的 D3D device。
+ */
+void RenderViewport::FinalizeSharedPath() {
+  // Destroy 对空 ID 安全，故无条件遍历：半途失败的目标也要清干净
+  // （非拥有的颜色附件走 TextureFreeImmediate，即时解除 interop 别名）
+  if (rd_ != nullptr) {
+    for (uint32 i = 0; i < kMaxSharedFrames; ++i) {
+      shared_targets_[i].Destroy(rd_);
+    }
+  }
+  shared_frame_count_ = 0;
+  shared_write_cursor_ = 0;
+  shared_path_active_ = false;
+}
+
 Error RenderViewport::CreateCompositeUniformSet() {
   // 重建前先释放旧 set（resize 重绑场景下旧 set 指向已销毁的纹理）
   if (composite_set_.IsValid()) {
@@ -808,6 +1029,28 @@ void RenderViewport::FinalizePostProcess() {
 
 void RenderViewport::RenderPostProcess(uint32 p_screen_width,
                                        uint32 p_screen_height) {
+  // Mode X：composite 输出改投共享显存目标（由 RenderAndSubmit 每帧设置）
+  const RDFramebufferID target = composite_override_.IsNull()
+                                     ? post_buffers_.framebuffer
+                                     : composite_override_;
+  RenderPostProcessTo(p_screen_width, p_screen_height, target);
+}
+
+/**
+ * @brief 后处理 composite pass 输出到指定 FBO
+ *
+ * @par 目标选择的唯一差别
+ *   Mode R 投 post_buffers_.framebuffer（随后被回读）；Mode X 投
+ *   共享显存目标的 FBO。输入的 uniform set（场景颜色纹理 + 参数 UBO）
+ *   与 pipeline 完全共用——共享形态只是换了画布，不改画面。
+ *
+ * @param[in] p_screen_width  视口宽
+ * @param[in] p_screen_height 视口高
+ * @param[in] p_target        输出 FBO
+ */
+void RenderViewport::RenderPostProcessTo(uint32 p_screen_width,
+                                         uint32 p_screen_height,
+                                         RDFramebufferID p_target) {
   float params[5] = {
       post_process_params_.gamma,
       post_process_params_.enable_distortion ? 1.0f : 0.0f,
@@ -818,14 +1061,13 @@ void RenderViewport::RenderPostProcess(uint32 p_screen_width,
   rd_->BufferUpdate(composite_params_ubo_, 0, sizeof(params), params);
 
   float clear_color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-  // Composite output goes to the post-process FBO. The default framebuffer is
-  // the hidden offscreen window surface (100x100) and nobody reads it back
-  // in Mode R — drawing there silently discards the result.
-  if (!post_buffers_.IsValid()) {
+  // Composite output goes to the target FBO. The default framebuffer is
+  // the hidden 100x100 offscreen window surface and nobody reads it back —
+  // drawing there silently discards the result.
+  if (p_target.IsNull()) {
     return;
   }
-  DrawListScope scope(rd_, post_buffers_.framebuffer, true, false, false,
-                      clear_color);
+  DrawListScope scope(rd_, p_target, true, false, false, clear_color);
   DrawListID dl = scope.Get();
 
   if (!scope.IsActive()) {

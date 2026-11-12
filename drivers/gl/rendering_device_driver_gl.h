@@ -587,6 +587,8 @@ struct GLTextureInfo {
   uint32 mipmaps = 1;                              ///< Mipmap 层级数
   uint32 layers = 1;                               ///< 纹理层数（数组纹理使用）
   bool is_immutable = false;  ///< 是否使用不可变存储（glTexStorage）
+  void* dx_alias = nullptr;  ///< DX interop 别名句柄（HANDLE；null = 自有存储）
+  bool dx_held = false;  ///< 绘制权当前是否在 GL 侧（Begin/EndWrite 配对凭据）
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -839,6 +841,29 @@ class GLRenderingDeviceDriver : public IRenderingDeviceDriver {
    * @return 纹理分配大小（字节）
    */
   uint64 TextureGetAllocationSize(TextureID p_texture) override;
+
+  // ── 外部资源导入（零拷贝上屏 Mode X；实现见 _gl_dx.cpp）──
+  /**
+   * @brief 是否可用外部资源导入
+   *
+   * @note 保守语义：探测（wglDXOpenDeviceNV）需要 D3D device 指针与
+   *       当前 GL 上下文，只能在首次 TextureCreateExternal 时完成。
+   *       因此本方法在探测成功前返回 false，调用方应以
+   *       TextureCreateExternal 的实际结果为准。
+   */
+  bool SupportsExternalTexture() const override {
+    return dx_interop_ready_;
+  }
+
+  /** @brief 以平台侧显存（ID3D11Texture2D）建立 GL 别名纹理 */
+  TextureID TextureCreateExternal(
+      const ExternalTextureSource& p_source) override;
+
+  /** @brief 跨 API 锁定（wglDXLockObjectsNV）——写之前唯一同步点 */
+  bool TextureExternalBeginWrite(TextureID p_texture) override;
+
+  /** @brief 跨 API 解锁（wglDXUnlockObjectsNV）——交还显示侧 */
+  void TextureExternalEndWrite(TextureID p_texture) override;
 
   /**
    * @brief 查询纹理格式支持的用途
@@ -1725,6 +1750,38 @@ class GLRenderingDeviceDriver : public IRenderingDeviceDriver {
 
   HashMap<uint64, GLTextureInfo>
       texture_infos_;  ///< Texture ID → 纹理元数据映射
+
+  // ── WGL_NV_DX_interop2 状态（Mode X 零拷贝上屏；见 _gl_dx.cpp）──
+  // 句柄以 void* 保存，避免本头文件传染 <windows.h>。
+  bool dx_interop_ready_ = false;   ///< 探测成功（入口点 + OpenDevice 均可用）
+  bool dx_interop_probed_ = false;  ///< 是否已尝试探测（失败只尝试一次）
+  void* dx_interop_device_ = nullptr;  ///< HANDLE（wglDXOpenDeviceNV 返回值）
+  void* dx_interop_dx_device_ =
+        nullptr;  ///< 打开时的 ID3D11Device*（换设备即失效）
+
+  /**
+   * @brief 探测并打开 GL↔DX 互操作设备（幂等，首次导入时调用）
+   *
+   * @param[in] p_dx_device 帧池的 ID3D11Device*（opaque）
+   *
+   * @retval Error::kOK          可用（dx_interop_ready_ 置位）
+   * @retval Error::kUnavailable 扩展缺失/OpenDevice 失败
+   */
+  Error DXInteropOpen(void* p_dx_device);
+
+  /** @brief 关闭互操作设备（Shutdown 时调用，须在 GL 上下文内） */
+  void DXInteropClose();
+
+  /**
+   * @brief 解除指定 GL 纹理名的 interop 别名（TextureFree 前置步骤）
+   *
+   * @param[in] p_gl_name GL 纹理名；非外部纹理静默返回
+   *
+   * @par 为何必须在 glDeleteTextures 之前
+   *   别名句柄持有 DX 资源引用；先删 GL 名会让注册关系悬空，
+   *   而帧池随后释放该显存 —— 双重释放风险。
+   */
+  void DXInteropUnregisterTexture(uint32 p_gl_name);
 
   uint64 limits_[static_cast<uint32>(Limit::kMax)] = {};  ///< 设备限制值数组
   Capabilities capabilities_;                             ///< 设备能力描述

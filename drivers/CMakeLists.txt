@@ -46,6 +46,14 @@ if(ARHUD_API_OPENGL)
         gl/rendering_device_driver_gl_shader_cache.cpp
     )
 
+    # Mode X 零回读上屏：外部显存导入（GL 侧）。仅 Windows 编译——
+    # 内部只经 platform::IGPUInterop 说话，本身不含 wgl 调用。
+    if(WIN32)
+        list(APPEND DRIVERS_SOURCES
+            gl/rendering_device_driver_gl_dx.cpp
+        )
+    endif()
+
     list(APPEND DRIVERS_HEADERS
         gl/rendering_context_driver_gl.h
         gl/rendering_device_driver_gl.h

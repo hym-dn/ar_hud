@@ -9,13 +9,15 @@
 ## 0. 一句话定位
 
 面向车载 AR-HUD 的 C++17 渲染引擎，架构对标 **Godot 4.6 `servers/rendering`**；
-Windows + OpenGL（MSVC，静态库），Conan 2.x 管依赖。主线程发命令 / 渲染线程执行 / 每屏上屏线程零 GL 呈现（Route B）。
+Windows + OpenGL（MSVC，静态库），Conan 2.x 管依赖。主线程发命令 / 渲染线程执行 /
+每屏上屏线程"不发渲染命令"地呈现（Route B；呈现源可以是 CPU 像素，也可以是
+显示侧分配的共享显存——后者才是生产形态）。
 
 ## 1. 工程现状
 
 - **进度不在本文维护**——当前位置、计划与完成历史见 `docs/skill/arhud-progress/SKILL.md`（唯一动态账本）。
-  一句话现状（2026-11-08）：S0 + S1 大部 ✅、全库风格迁移 ✅、五路 demo 端到端出图 ✅，
-  处于 S1 收尾（`Ref<Buffer>` 参数体系）→ S2（RSG）交界。
+  一句话现状（2026-11-08）：S0 + S1 大部 ✅、全库风格迁移 ✅、五路 demo 端到端出图 ✅、
+  **Mode X 共享显存零回读上屏 ✅**，处于 S1 收尾（`Ref<Buffer>` 参数体系）→ S2（RSG）交界。
 - **Godot 对齐迁移（绞杀者计划 S0→S7，见设计 skill §7.12）进行中**；
   旧实现 `render_server.*` 与门面**并存**是绞杀者过渡态，勿提前删除；
   删除判定：`grep -r "render_server_\."` 无命中。
@@ -30,7 +32,7 @@ core → platform → drivers → servers → scene → app        （单向，�
 | 目录 | 库 target | 内容 | 关键文件 |
 |---|---|---|---|
 | `core/` | arhud_core | 类型/容器/同步/日志/UTF-32 String/数学，零内部依赖（+glm） | `typedefs.h`（`Error` 枚举、`ARHUD_NEW` 等）、`template/rid.h`、`os/sync.h`、`math/camera_matrix.h` |
-| `platform/` | arhud_platform | 契约在根，Win32 实现在 `windows/` | `display_server.h`、`window.h`、`gl_context_manager.h`、`frame_presenter.h`（Mode R 回读 / Mode S Swap） |
+| `platform/` | arhud_platform | 契约在根，Win32 实现在 `windows/` | `display_server.h`、`window.h`、`gl_context_manager.h`、`frame_presenter.h`（Mode R 回读 / Mode S Swap）、`shared_frame_pool.h`（Mode X 显示侧帧池）、`gpu_interop.h`（跨 API 显存别名） |
 | `drivers/` | arhud_drivers | 三阶 GPU 抽象**契约**在根（RCD/RDD），GL 实现在 `gl/` | `rendering_context_driver.h`、`rendering_device_driver.h`、`rendering_device_commons.h` |
 | `servers/` | arhud_servers | 引擎主体：RD / 命令 / Storage / Renderer / 视口 / 帧编排 / 引擎入口 | 见 §3 |
 | `scene/` | arhud_scene | 空壳（Phase 6 场景树），位于 servers 之上 | `scene_placeholder.cpp` |
@@ -54,8 +56,8 @@ servers/rendering/
 ├─ rendering_device.*(+_frame/_draw_list/_staging)  RD：资源生命周期/Staging/帧时延销毁（渲染线程专用 API）
 ├─ render_viewport.*         每屏帧编排（FBO+后处理+ViewportSceneState 相机/灯光，ADR-0006/0007）
 ├─ viewport_provider.h       GetViewport(index) 路由（S6 并入 RSG::viewport）
-├─ frame_image_queue.h       每屏双槽状态机 FREE→WRITING→READY→COMMITTED→ON_SCREEN（背压≤1 在飞）
-├─ present_thread.h          每屏上屏线程（零 GL）
+├─ frame_image_queue.h       每屏双槽状态机 FREE→WRITING→READY→COMMITTED→ON_SCREEN（背压≤1 在飞；槽可载 CPU 像素或帧 token）
+├─ present_thread.h          每屏上屏线程（不发渲染命令；Mode X/R/S 逐帧按 token 选出路）
 ├─ render_buffers.h / draw_list_scope.h  FBO 打包 / RAII DrawList
 ├─ storage/  shader|texture|material|mesh|font_storage.*   GPU-backed 资源 Storage（归 Compositor）
 │            item_storage.*    CPU-only item 账本+层级+脏位（ADR-0005，归 Engine）
@@ -70,8 +72,8 @@ servers/rendering/
 | 线程 | 拥有 | 职责 |
 |---|---|---|
 | 主线程 ×1 | 无 GL（初始化期例外） | `BeginFrame`→经 RenderServer 发命令→`SubmitScene`→`EndFrame` |
-| 渲染线程 ×1 | GL 上下文 + 全部 Storage | `Flush` 命令→脏屏渲 FBO→`glReadPixels`→MarkReady |
-| 上屏线程 每屏×1 | 零 GL | `AcquireReady`→`Present`(Mode R)/`SwapPresent`(Mode S)→`Release` |
+| 渲染线程 ×1 | GL 上下文 + 全部 Storage | `Flush` 命令→脏屏渲 FBO→呈现（Mode X 直写共享显存 / Mode R `glReadPixels`）→MarkReady |
+| 上屏线程 每屏×1 | 不发渲染命令（Mode X 下只调 DXGI） | `AcquireReady`→`CommitFrame`(X)/`Present`(R)/`SwapPresent`(S)→`Release` |
 
 跨线程通道：`CommandQueue`（主→渲染）、`FrameImageQueue`（渲染→上屏），`Semaphore` 唤醒。
 命令形态一律 `PushBound(目标, 方法, POD 参数)`；创建类走 **RID 分裂**（`XxxAllocate` 同步拿 RID，初始化异步入队）；
@@ -92,6 +94,17 @@ ctest --test-dir build -C Debug            :: 3 个测试须全绿
 
 产物：`build/bin/<cfg>/arhud_demo_*.exe`、`build/lib/<cfg>/arhud_*.lib`。
 **每次改完的最低验证**：编译通过 + `ctest` 绿 + 相关 demo 能出图（demo 是冒烟测试）。
+
+呈现路径的自证开关（退出时打日志，不靠截图猜）：
+
+```bat
+set ARHUD_FORCE_READBACK=1   :: 强制 Mode R（A/B 基线）
+set ARHUD_DEBUG_SAMPLE=1     :: 每 300 帧采样一次"即将上屏帧"的平均亮度
+```
+
+看 demo 结尾两行即可判定：`PresentThread finalized (shared=… readback=… degraded=… failed=…)`
+与 `RenderViewport finalized (present path: shared=… readback=… MB… ms GPU->CPU)`。
+`shared>0 且 readback=0/0 MB` = 零回读成立；`degraded>0` = 发生过运行期降级，须查因。
 
 ## 6. 编码规范（摘要；全量裁决与存量迁移见 `docs/skill/arhud-coding-style/SKILL.md`）
 
@@ -117,6 +130,23 @@ ctest --test-dir build -C Debug            :: 3 个测试须全绿
 4. RD 是渲染线程专用 API：断言 `IsRenderThread() || command_queue_ == nullptr`；跨线程一律走 RenderServer RID 分裂。
 5. 多屏共享栈：`RenderViewport` 经 `EngineStackRefs` 引用共享对象，自身不拥有——勿在视口里 new 共享资源。
 6. MSVC `/utf-8` 已开；**注释规范 = Doxygen 中文**（风格 skill §7，2026-11-08 裁决），文件必须 UTF-8。
+7. **`Present1` 第三参不可为 `nullptr`**：SDK 头里它是 `_In_`（非 `_In_opt_`），传空指针会在
+   `dxgi.dll` 内解引用 `NULL+0x10` 直接 AV（与 swap effect／线程／窗口类样式无关）。
+   必须传零值 `DXGI_PRESENT_PARAMETERS`。文档说法不可信，已用最小复现程序对照验证。
+8. **interop 纹理必须先加锁再挂 FBO**：`wglDXRegisterObjectNV` 之后未 `Lock` 就
+   `glFramebufferTexture2D`，`glCheckFramebufferStatus` 报 `GL_FRAMEBUFFER_UNSUPPORTED`。
+   见 `RenderViewport::InitializeSharedPath`。
+9. **共享显存的拆卸顺序是硬约束**：解除 interop 别名（screens Finalize）→
+   `wglDXCloseDeviceNV`（RD Shutdown）→ 才允许释放 D3D11 device/帧池；反序会在驱动内 AV。
+   另外外部导入纹理**不能走 RD 的帧槽延迟释放**（故有 `TextureFreeImmediate`）。
+10. **窗口 resize 的三条硬规则**（2026-11-08 修复；此前会破坏 RD 对象，基线回读同样复现）：
+    - **尺寸唯一权威 = `WM_SIZE` 回调**（客户区），经 `screen_window_ids_` 路由到对应屏；
+      绝不再用"BeginFrame 轮询首屏窗口宽高"这类第二源头（双源互相拉扯 → 不收敛）。
+    - **render_pass 不编码尺寸**（附件只有格式/采样/加载存储/布局）。`RenderBuffers::Recreate`
+      只重建尺寸相关的纹理+framebuffer，**必须保留 render_pass**——销毁它会经
+      `DependencyAdd(render_pass→pipeline)` 级联误杀 composite pipeline。
+    - **RID 的 index 是每表本地槽号**，高 32 位带表标识（`rid_detail::MakeTag`）保证跨表唯一；
+      `FreeDriverResourceByRid` 逐表 `Owns()` 探测依赖此性质，破坏它会跨表误杀（见 tests/core/test_rid_owner.cpp）。
 
 ## 8. 文档与决策索引
 

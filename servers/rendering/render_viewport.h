@@ -1,12 +1,21 @@
 /**
  * @file render_viewport.h
- * @brief 单屏渲染管线（B3-M0.3：FBO 渲染 + GDI 上屏，无 SwapBuffers）
+ * @brief 单屏帧编排（FBO 渲染 + 两条上屏路径：Mode R 回读 / Mode X 共享显存）
  *
- * B3-M0.3 渲染路径变更：GL 上下文走 offscreen surface，可见窗口无 GL
- * 像素格式。渲染始终输出到 scene_buffers_.framebuffer（FBO），渲染线程
- * 帧完成后用 rd_->FramebufferReadback() 回读 FBO 像素到 cpu_buffer_，
- * 再由 IFramePresenter::Present() 通过 GDI StretchDIBits 提交到可见窗口。
- * 全程不调用 SwapBuffers。
+ * 渲染恒输出到 FBO：场景 pass 渲进 scene_buffers_，后处理 composite pass
+ * 渲进"输出目标"。输出目标由呈现路径决定：
+ *   - Mode R（默认）：composite → post_buffers_，帧末 rd_->FramebufferReadback
+ *     回读到 CPU 槽，再由 IFramePresenter::Present() 经 GDI 上屏；
+ *   - Mode X（共享显存）：composite 直接渲进"显示侧帧池导入的纹理"
+ *     所组成的 FBO——像素从不进 CPU，本线程只负责 Lock/Unlock，
+ *     上屏线程经 ISharedFramePool::CommitFrame 提交。
+ * 两条路径全程都不调 SwapBuffers。
+ *
+ * @par 共享路径的成立条件（任一不满足即回落 Mode R，见 InitializeSharedPath）
+ *   1. 平台帧池可用（ISharedFramePool::IsAvailable）；
+ *   2. 后端可导入外部显存（首帧探测）；
+ *   3. composite pipeline 就绪（post_process_enabled_）——共享形态必须有
+ *      一次全屏 pass 把场景写进共享显存。
  *
  * B3-M0.1 之前 RenderViewport 按值拥有完整渲染栈（RD/CommandQueue/
  * Compositor/ItemStorage/RenderServer）。上提后改为收 EngineStackRefs
@@ -14,10 +23,11 @@
  *
  * RenderViewport 保留的 per-screen 状态：offscreen surface/context 引用、
  * 宽高、后处理全套（RenderBuffers/composite pipeline/UBO）、CPU 回读
- * 缓冲、IFramePresenter 指针、渲染线程原语。
+ * 缓冲、共享显存输出目标、IFramePresenter/帧池指针、渲染线程原语。
  *
- * @see EngineStackRefs  共享栈指针注入
- * @see ARHudEngine      栈所有方
+ * @see EngineStackRefs     共享栈指针注入
+ * @see ISharedFramePool    显示侧帧池（Mode X）
+ * @see ARHudEngine         栈所有方
  */
 
 #ifndef ARHUD_SERVERS_RENDERING_RENDER_VIEWPORT_H_
@@ -34,6 +44,7 @@
 #include "render_buffers.h"
 #include "renderer/compositor.h"
 #include "rendering_server.h"
+#include "shared_frame_pool.h"
 #include "storage/item_storage.h"
 #include "storage/viewport_scene_state.h"
 #include "typedefs.h"
@@ -63,6 +74,9 @@ struct EngineStackRefs {
 
   // B3-M0.3: per-screen GDI 上屏器（Engine 创建，RenderViewport 只持有指针）
   IFramePresenter* presenter = nullptr;
+
+  // Mode X: per-screen 共享显存帧池（Engine 创建，非拥有；null = 走回读）
+  ISharedFramePool* shared_pool = nullptr;
 };
 
 class RenderViewport {
@@ -112,6 +126,16 @@ class RenderViewport {
   /** @brief B3: 设置帧图像队列（由 ARHudEngine 创建并注入，非拥有） */
   void SetFrameImageQueue(FrameImageQueue* p_queue) {
     queue_ = p_queue;
+  }
+
+  /**
+   * @brief 本屏是否正在走共享显存（零回读）呈现路径
+   *
+   * Engine 据此选择 PresentMode 与队列背衬形态：帧池可用但导入探测
+   * 失败时本值为 false，呈现必须回落 Mode R。
+   */
+  bool IsSharedPresentActive() const {
+    return shared_path_active_;
   }
 
   /** @brief 主线程渲染 API 代理（资源创建/变更/释放 + 帧场景）。app
@@ -216,6 +240,35 @@ class RenderViewport {
   void RenderPostProcess(uint32 p_screen_width, uint32 p_screen_height);
 
   /**
+   * @brief 后处理 composite 输出到指定 FBO（Mode X 共享显存目标）
+   *
+   * @param[in] p_screen_width  视口宽
+   * @param[in] p_screen_height 视口高
+   * @param[in] p_target        输出 FBO（共享显存渲染目标）
+   */
+  void RenderPostProcessTo(uint32 p_screen_width, uint32 p_screen_height,
+                           RDFramebufferID p_target);
+
+  /**
+   * @brief 建立共享显存呈现路径（导入每帧渲染目标）
+   *
+   * @par 前置条件
+   *   - `shared_pool_` 有效且 `IsAvailable()`；
+   *   - composite pass 可用（`post_process_enabled_`）——共享形态必须有
+   *     一次全屏 pass 把场景写进共享显存。
+   *
+   * @par 失败即回落
+   *   任一帧导入失败则整体撤销并返回 false（Mode R 保持原样），
+   *   不允许半共享状态。
+   *
+   * @return true 共享路径已就绪
+   */
+  bool InitializeSharedPath();
+
+  /** @brief 撤销共享路径（立即解除导入；平台侧随后即可释放显存） */
+  void FinalizeSharedPath();
+
+  /**
    * @brief 创建/重建后处理 uniform set（绑定当前 scene_buffers_.color_texture）
    * @note resize 重建 FBO
    * 后颜色纹理变更，须调用以重绑新纹理（否则采样悬空纹理）
@@ -242,9 +295,20 @@ class RenderViewport {
   // B3-M0.3: GDI 上屏（per-screen，Engine 创建，RenderViewport 持有指针）
   IFramePresenter* presenter_ = nullptr;
 
-  // B3-M0.3: FBO 回读目标（rd_->FramebufferReadback → CPU 缓冲 → Present）
-  uint8* cpu_buffer_ = nullptr;
-  uint32 cpu_buffer_size_ = 0;
+  // ── Mode X：共享显存呈现（per-screen，Engine 创建，本类持有指针）──
+  static constexpr uint32 kMaxSharedFrames = 4;  ///< 帧池环深度上限
+
+  ISharedFramePool* shared_pool_ = nullptr;  ///< 显示侧帧池（非拥有，可空）
+  bool shared_path_active_ = false;  ///< 共享路径实际生效（探测通过后置位）
+  uint32 shared_frame_count_ = 0;    ///< 已导入的帧目标数
+  uint32 shared_write_cursor_ = 0;   ///< 轮转游标（渲染线程私有）
+  RenderBuffers shared_targets_[kMaxSharedFrames];  ///< 每帧一个输出 FBO
+
+  // ── 呈现路径统计（Finalize 时一行汇总，便于验收"是否真的零回读"）──
+  uint64 readback_frames_ = 0;  ///< Mode R 回读帧数
+  uint64 readback_bytes_ = 0;   ///< Mode R 累计搬运字节（GPU→CPU）
+  uint64 readback_us_ = 0;      ///< Mode R 回读累计耗时
+  uint64 shared_frames_ = 0;    ///< Mode X 提交帧数（零 CPU 搬运）
 
   // B3-M0.3: 渲染线程侧 deferred resize（HandleResize 置位，渲染线程消费）
   std::atomic<bool> resize_pending_{false};
@@ -268,6 +332,10 @@ class RenderViewport {
   // readback samples from here. In Mode R the default framebuffer is the
   // hidden 100x100 offscreen window and must never be the presented source.
   RenderBuffers post_buffers_;
+  // Mode X：非空时 composite pass 输出到此 FBO（共享显存目标），
+  // 取代 post_buffers_。仅在 RenderAndSubmit 的一次帧内有效——
+  // 场景 pass 与 uniform set 完全不受影响（输入的仍是 scene_buffers_）。
+  RDFramebufferID composite_override_;
   RID composite_shader_rid_;
   RDShaderID composite_shader_rd_id_;
   RDVertexFormatID composite_vertex_format_id_;

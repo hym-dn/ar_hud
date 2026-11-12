@@ -35,6 +35,7 @@
 #include "arhud_engine.h"
 
 #include <chrono>
+#include <cstdlib>
 
 #include "io/logger.h"
 #include "os/memory.h"
@@ -49,6 +50,7 @@
 #endif
 
 #ifdef ARHUD_PLATFORM_WINDOWS
+#include "windows/dxgi_shared_frame_pool_win32.h"
 #include "windows/frame_presenter_win32.h"
 #endif
 
@@ -58,6 +60,25 @@
 #include "rendering_server_default.h"
 
 namespace arhud {
+
+namespace {
+
+/**
+ * @brief 环境变量 ARHUD_FORCE_READBACK=1 时强制走回读呈现路径
+ *
+ * 只读一次（结果缓存）；用于 A/B 对比与故障定位，不影响默认行为。
+ *
+ * @return true 强制 Mode R
+ */
+bool ForceReadbackRequested() {
+  static const bool forced = []() {
+    const char* value = std::getenv("ARHUD_FORCE_READBACK");
+    return value != nullptr && value[0] == '1';
+  }();
+  return forced;
+}
+
+}  // namespace
 
 struct ARHudEngine::Impl {
 #ifdef ARHUD_PLATFORM_WINDOWS
@@ -112,8 +133,48 @@ struct ARHudEngine::Impl {
   LocalVector<FrameImageQueue*> frame_queues_;
   LocalVector<PresentThread*> present_threads_;
   LocalVector<IFramePresenter*> presenters_;
+  // Mode X: per-screen 共享显存帧池（显示侧拥有帧缓冲；null 项 = 该屏走回读）
+  LocalVector<ISharedFramePool*> frame_pools_;
+  // 每屏对应的可见窗口 ID —— WM_SIZE 靠它把尺寸投递给正确的那一屏
+  LocalVector<IWindow::WindowID> screen_window_ids_;
 
-  EngineStackRefs GetStackRefs(IFramePresenter* p_presenter) {
+  /**
+   * @brief 按可见窗口 ID 查它所属的屏下标
+   *
+   * @param[in] p_window_id 窗口 ID（WindowCallbacks 的首参）
+   * @return 屏下标；未命中返回 RenderViewport::kInvalidId
+   */
+  uint32 FindScreenIndexByWindow(IWindow::WindowID p_window_id) const {
+    for (uint32 i = 0; i < screen_window_ids_.Size(); ++i) {
+      if (screen_window_ids_[i] == p_window_id) {
+        return i;
+      }
+    }
+    return RenderViewport::kInvalidId;
+  }
+
+  /**
+   * @brief 释放 per-screen 基础设施（presenter 与帧池除外——二者有
+   *        跨对象的拆卸顺序要求，由 Finalize 单独按序处理）
+   */
+  void DestroyScreenInfra() {
+    for (uint32 i = 0; i < present_threads_.Size(); ++i) {
+      present_threads_[i]->Finalize();
+      ARHUD_DELETE(present_threads_[i]);
+    }
+    present_threads_.Clear();
+
+    for (uint32 i = 0; i < frame_queues_.Size(); ++i) {
+      frame_queues_[i]->Finalize();
+      ARHUD_DELETE(frame_queues_[i]);
+    }
+    frame_queues_.Clear();
+
+    screen_window_ids_.Clear();
+  }
+
+  EngineStackRefs GetStackRefs(IFramePresenter* p_presenter,
+                               ISharedFramePool* p_pool) {
     return EngineStackRefs{&rd,
                            &command_queue,
                            &item_storage,
@@ -121,7 +182,8 @@ struct ARHudEngine::Impl {
                            &compositor,
                            offscreen_surface_id,
                            offscreen_context_id,
-                           p_presenter};
+                           p_presenter,
+                           p_pool};
   }
 };
 
@@ -329,44 +391,110 @@ ARHudEngine::ViewportID ARHudEngine::AddScreen(const ScreenConfig& p_config) {
     window->SetCallbacks(wc);
   }
 
+  // ── 客户区实测尺寸：帧池 / 上屏器 / 视口 / 帧队列四处必须同口径 ──
+  // WS_OVERLAPPEDWINDOW 下"请求尺寸"是外框，WM 会减去标题栏/边框得到
+  // 客户区；且首个 WM_SIZE 发生在回调注册之前（engine 收不到）。若沿用
+  // 请求值，视口尺寸与真实客户区错配，而回读会把 width_×height_×4 写进
+  // 按另一尺寸分配的队列槽——溢出。故这里一次实测、四处共用。
+  uint32 client_w = p_config.width;
+  uint32 client_h = p_config.height;
+  if (window != nullptr) {
+    const uint32 w = window->GetWidth();
+    const uint32 h = window->GetHeight();
+    if (w > 0 && h > 0) {
+      client_w = w;
+      client_h = h;
+    }
+  }
+  if (client_w != p_config.width || client_h != p_config.height) {
+    ARHUD_LOG_INFO("AddScreen: window client size %ux%u (requested %ux%u) — "
+                   "seeding all buffers with client size",
+                   client_w, client_h, p_config.width, p_config.height);
+  }
+
+  // Mode X 优先：先建共享显存帧池（显示侧分配帧缓冲）。
+  // 池可用时**不创建 GDI 上屏器**：那条路径的 Initialize 会 GetDC(hwnd)，
+  // 而本窗口的内容此后由 DXGI swap chain 拥有，GDI DC 与 flip-model
+  // 链共存没有意义（GDI 只在真要回读上屏时才需要）。
+  // 若后端导入随后失败（见下文的按需补建），才回头创建 GDI 上屏器。
+  // ARHUD_FORCE_READBACK=1 强制走回读（A/B 对比与故障定位用）。
+  ISharedFramePool* pool = nullptr;
+  const bool force_readback =
+      p_config.force_readback || ForceReadbackRequested();
+  if (!force_readback) {
+#ifdef ARHUD_PLATFORM_WINDOWS
+    pool = ARHUD_NEW(DxgiSharedFramePoolWin32);
+    Error pool_err = pool->Initialize(native_handle, client_w, client_h);
+    if (pool_err != Error::kOK || !pool->IsAvailable()) {
+      ARHUD_LOG_INFO("AddScreen: shared frame pool unavailable (err=%d) — "
+                     "readback present path",
+                     static_cast<int32>(pool_err));
+      pool->Finalize();
+      ARHUD_DELETE(pool);
+      pool = nullptr;
+    }
+#endif
+  }
+
+  // GDI 上屏器**总是创建**：它是 Mode R 的呈现器，也是 Mode X 在运行期
+  // 降级（resize 重建失败 / 设备丢失）后的唯一出路。Initialize 只取还一次
+  // DC，不与 DXGI swap chain 争内容。
   IFramePresenter* presenter = ARHUD_NEW(FramePresenterWin32);
-  Error err =
-      presenter->Initialize(native_handle, p_config.width, p_config.height);
+  Error err = presenter->Initialize(native_handle, client_w, client_h);
   if (err != Error::kOK) {
     ARHUD_LOG_ERROR("kFailed",
                     "AddScreen: IFramePresenter initialization failed");
+    presenter->Finalize();
     ARHUD_DELETE(presenter);
-    impl_->display_server.WindowDestroy(wid);
-    return RenderViewport::kInvalidId;
+    presenter = nullptr;
   }
 
-  // 3. RenderViewport（收离屏 context + presenter + 共享栈指针）
+  // 3. RenderViewport（收离屏 context + presenter + 帧池 + 共享栈指针）
   RenderViewport::Config screen_config;
-  screen_config.width = p_config.width;
-  screen_config.height = p_config.height;
+  screen_config.width = client_w;
+  screen_config.height = client_h;
 
   auto* screen = ARHUD_NEW(RenderViewport);
   err = screen->Initialize(&impl_->context_driver, screen_config,
-                           impl_->GetStackRefs(presenter));
+                           impl_->GetStackRefs(presenter, pool));
   if (err != Error::kOK) {
     ARHUD_LOG_ERROR("kFailed",
                     "AddScreen: RenderViewport initialization failed");
     ARHUD_DELETE(screen);
-    presenter->Finalize();
-    ARHUD_DELETE(presenter);
+    if (presenter != nullptr) {
+      presenter->Finalize();
+      ARHUD_DELETE(presenter);
+    }
+    if (pool != nullptr) {
+      pool->Finalize();
+      ARHUD_DELETE(pool);
+    }
     impl_->display_server.WindowDestroy(wid);
     return RenderViewport::kInvalidId;
   }
 
   // B3: 创建 per-screen FrameImageQueue + PresentThread
+  //     呈现模式由视口的实际探测结果决定（帧池可用 ≠ 导入成功）
   auto* queue = ARHUD_NEW(FrameImageQueue);
-  queue->Initialize(p_config.width, p_config.height);
+  queue->Initialize(client_w, client_h);
   queue->SetWakeSemaphore(
       &impl_->render_wake_);  // B3: 释放/启动事件唤醒渲染线程
   screen->SetFrameImageQueue(queue);
 
+  const PresentMode mode =
+      screen->IsSharedPresentActive() ? PresentMode::kShared
+                                      : PresentMode::kReadback;
+
+  // presenter 已在上文无条件创建（既是 Mode R 呈现器，也是 Mode X
+  // 运行期降级的出路）；创建失败时 presenter==nullptr，
+  // PresentThread 会在提交回读帧时告警并丢帧，不影响共享路径。
   auto* present_thread = ARHUD_NEW(PresentThread);
-  present_thread->Initialize(queue, presenter);
+  present_thread->Initialize(queue, presenter, mode, pool);
+  if (mode == PresentMode::kShared) {
+    ARHUD_LOG_INFO("AddScreen: screen %u presenting via shared VRAM "
+                   "(zero readback)",
+                   static_cast<uint32>(screens_.Size()));
+  }
 
   ViewportID id = static_cast<ViewportID>(screens_.Size());
   screens_.PushBack(screen);
@@ -374,6 +502,9 @@ ARHudEngine::ViewportID ARHudEngine::AddScreen(const ScreenConfig& p_config) {
   impl_->frame_queues_.PushBack(queue);
   impl_->present_threads_.PushBack(present_thread);
   impl_->presenters_.PushBack(presenter);
+  impl_->frame_pools_.PushBack(pool);
+  // 注册窗口→屏映射：WM_SIZE 靠它把新尺寸投给正确的屏（OnWindowResize）
+  impl_->screen_window_ids_.PushBack(wid);
 
   // P0-2: 如果渲染线程已启动，给新 queue pre-post
   if (impl_->render_thread_started_) {
@@ -408,14 +539,28 @@ void ARHudEngine::Finalize() {
   }
   impl_->present_threads_.Clear();
 
-  // 3. 停止 RenderViewport + 释放 FrameImageQueue
+  // 2b. 把离屏 context 接回主线程
+  //     RenderViewport::Finalize 会**同步**解除共享显存的 interop 别名
+  //     （glDeleteTextures + wglDXUnregisterObjectNV），那要求 current
+  //     上下文——渲染线程已退出、其 context 绑定随线程释放，故必须先
+  //     在这里重新 MakeCurrent。MakeRenderThread 让 RD 的执行者线程
+  //     断言按"当前线程即执行者"通过。
+#ifdef ARHUD_API_OPENGL
+  if (impl_->stack_initialized) {
+    impl_->context_driver.MakeCurrent(impl_->offscreen_context_id,
+                                      impl_->offscreen_surface_id);
+    impl_->rd.MakeRenderThread();
+  }
+#endif
+
+  // 3. 停止 RenderViewport（含同步解除 interop）+ 释放 FrameImageQueue
   for (uint32 i = 0; i < screens_.Size(); ++i) {
     screens_[i]->Finalize();
     ARHUD_DELETE(screens_[i]);
   }
   screens_.Clear();
 
-  // 4. 释放 FrameImageQueue + IFramePresenter
+  // 5. 释放 FrameImageQueue
   for (uint32 i = 0; i < impl_->frame_queues_.Size(); ++i) {
     impl_->frame_queues_[i]->Finalize();
     ARHUD_DELETE(impl_->frame_queues_[i]);
@@ -423,18 +568,16 @@ void ARHudEngine::Finalize() {
   impl_->frame_queues_.Clear();
 
   for (uint32 i = 0; i < impl_->presenters_.Size(); ++i) {
-    impl_->presenters_[i]->Finalize();
-    ARHUD_DELETE(impl_->presenters_[i]);
+    if (impl_->presenters_[i] != nullptr) {
+      impl_->presenters_[i]->Finalize();
+      ARHUD_DELETE(impl_->presenters_[i]);
+    }
   }
   impl_->presenters_.Clear();
 
   if (impl_) {
-    // 2. 销毁共享栈（MakeCurrent 离屏 context 确保 GL 状态有效）
+    // 6. 销毁共享栈（context 已在 2b 接回主线程，GL 状态有效）
     if (impl_->stack_initialized) {
-      impl_->context_driver.MakeCurrent(impl_->offscreen_context_id,
-                                        impl_->offscreen_surface_id);
-      impl_->rd.MakeRenderThread();
-
       RenderingServer::singleton =
           nullptr;  // S0: 撤销全局单例（共享栈即将释放）
       impl_->rendering_server.Finalize();
@@ -443,6 +586,20 @@ void ARHudEngine::Finalize() {
       impl_->rd.Finalize();
       impl_->stack_initialized = false;
     }
+
+    // 7. 释放共享显存帧池 —— 两道顺序硬约束：
+    //    a) 晚于 screens_：interop 别名必须已解除（否则 DX 资源被
+    //       驱动侧引用着就释放，别名悬空）；
+    //    b) 晚于 rd.Finalize()：后端 Shutdown 里的 wglDXCloseDeviceNV
+    //       要对着**仍存活**的 D3D11 device 调用——先释放 device 再关
+    //       interop 会在驱动内 AV（实测崩溃点）。
+    for (uint32 i = 0; i < impl_->frame_pools_.Size(); ++i) {
+      if (impl_->frame_pools_[i] != nullptr) {
+        impl_->frame_pools_[i]->Finalize();
+        ARHUD_DELETE(impl_->frame_pools_[i]);
+      }
+    }
+    impl_->frame_pools_.Clear();
 
 #ifdef ARHUD_API_OPENGL
     // 3. 销毁离屏 context + surface
@@ -522,19 +679,10 @@ void ARHudEngine::BeginFrame() {
   impl_->display_server.ProcessEvents();
 #endif
 
-  // B3: resize 检测（通过 IWindow，不依赖 RCD surface）
-  if (impl_->window_id != IWindow::kInvalidWindowId) {
-    IWindow* win = impl_->display_server.GetWindow(impl_->window_id);
-    if (win != nullptr && !screens_.IsEmpty()) {
-      uint32 win_w = win->GetWidth();
-      uint32 win_h = win->GetHeight();
-      if (win_w > 0 && win_h > 0 &&
-          (win_w != screens_[0]->GetWidth() ||
-           win_h != screens_[0]->GetHeight())) {
-        screens_[0]->HandleResize(win_w, win_h);
-      }
-    }
-  }
+  // 尺寸变更**只有一个源头**：窗口 WM_SIZE → OnWindowResize 回调
+  // （见该函数）。历史上这里还并行跑一段"轮询首屏窗口宽高并比对"的
+  // 逻辑，两个源头同时投递 resize 请求、且轮询只认 screens_[0]，
+  // 多屏与 DPI 变化下互相拉扯（日志表现为 resize pending 反复不收敛）。
 
   // B3: 启动 Engine 级渲染线程（首次 BeginFrame）
   if (!impl_->render_thread_started_) {
@@ -680,14 +828,45 @@ void ARHudEngine::OnWindowPaint(uint32 p_id, void* p_userdata) {
   }
 }
 
+/**
+ * @brief 窗口尺寸变更回调（WM_SIZE，主线程）
+ *
+ * @par 尺寸的唯一权威入口
+ *   lParam 是客户区宽高，与窗口 `width_/height_` 同源同口径；这里把它
+ *   **投给发生变化的那一屏**（经 screen_window_ids_ 路由），而不是只投
+ *   首屏——多屏下每屏有各自窗口，错投会让某屏永远得不到重建。
+ *   随后置 force_redraw_ 唤醒渲染线程，由 `ApplyPendingResize()` 在
+ *   "无在途帧"的窗口里消费。
+ *
+ * @param[in] p_id       窗口 ID
+ * @param[in] p_width    新宽（像素，客户区）
+ * @param[in] p_height   新高（像素，客户区）
+ * @param[in] p_userdata ARHudEngine this
+ */
 void ARHudEngine::OnWindowResize(uint32 p_id, int32 p_width, int32 p_height,
                                  void* p_userdata) {
-  (void)p_id;
-  (void)p_width;
-  (void)p_height;
-  if (p_userdata != nullptr) {
-    static_cast<ARHudEngine*>(p_userdata)->RequestFullRedraw();
+  auto* self = static_cast<ARHudEngine*>(p_userdata);
+  if (self == nullptr || self->impl_ == nullptr) {
+    return;
   }
+
+  if (p_width <= 0 || p_height <= 0) {
+    // 最小化等非正常尺寸：不投递，等恢复时的 WM_SIZE
+    return;
+  }
+
+  const uint32 index =
+      self->impl_->FindScreenIndexByWindow(static_cast<IWindow::WindowID>(p_id));
+  if (index == RenderViewport::kInvalidId || index >= self->screens_.Size()) {
+    // 未注册到屏的窗口（例如离屏承载窗口）——只当无事发生
+    ARHUD_LOG_VERBOSE("OnWindowResize: window %u is not bound to a screen",
+                      p_id);
+    return;
+  }
+
+  self->screens_[index]->HandleResize(static_cast<uint32>(p_width),
+                                      static_cast<uint32>(p_height));
+  self->RequestFullRedraw();
 }
 
 void ARHudEngine::Run(IAppLoop& p_app_loop) {

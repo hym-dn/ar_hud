@@ -702,6 +702,42 @@ struct TextureView {
 };
 
 /**
+ * @brief 外部 GPU 资源导入描述（跨 API 共享显存的渲染目标）
+ *
+ * @par 语义
+ *   帧缓冲由**显示侧**（platform 层 ISharedFramePool）分配并拥有，
+ *   渲染侧只借用其显存作为渲染目标——后端据此建立跨 API 别名
+ *   （GL: WGL_NV_DX_interop2；Vulkan:
+ *   VK_EXT_external_memory_host / OPAQUE_WIN32；D3D: 原生）。
+ *   与 TextureCreate 的根本差别：本接口**不分配显存**，因此
+ *   不计入 vram_usage_，且销毁时必须先解除别名再归还资源。
+ *
+ * @par 生命周期契约（调用方负责）
+ *   - `native_resource` 必须比返回的 TextureID 活得更久；
+ *   - 平台侧要复用/重建该显存前，调用方必须先 TextureFree
+ *     （后端在 TextureFree 内解除别名）——这就是 RD 侧
+ *     `TextureFreeImmediate` 存在的原因（帧槽延迟释放不安全）。
+ *
+ * @par 跨线程
+ *   纯 POD + 不透明指针，可按值传递；指针解释权在后端，
+ *   servers 层不得解引用（遵守"禁止裸指针跨线程"的**数据**约束：
+ *   此处传的是资源身份，不是像素）。
+ */
+struct ExternalTextureSource {
+  void* native_device = nullptr;   ///< 拥有资源的 GPU 设备（Win32: ID3D11Device*）
+  void* native_resource = nullptr;  ///< 资源本体（Win32: ID3D11Texture2D*）
+  uint32 width = 0;                ///< 宽（像素，须与资源一致）
+  uint32 height = 0;               ///< 高（像素，须与资源一致）
+  DataFormat format = DataFormat::kR8G8B8A8Unorm;  ///< 后端须能解读的像素格式
+  bool writable = true;            ///< 渲染侧是否写入（false = 只读共享）
+
+  /** @brief 描述是否可用（资源与尺寸齐备） */
+  bool IsValid() const {
+    return native_resource != nullptr && width > 0 && height > 0;
+  }
+};
+
+/**
  * @brief 纹理内存布局（Vulkan 布局转换专用）
  *
  * @par 语义

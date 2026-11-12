@@ -258,6 +258,17 @@ class GLContextManagerWin32 : public IGLContextManager {
    */
   virtual bool IsInitialized() const override;
 
+  /**
+   * @brief 跨 API GPU 资源共享实现（Mode X 零拷贝上屏）
+   *
+   * @return WGL_NV_DX_interop2 实现（进程内无状态单例，调用方不拥有）；
+   *         未初始化时返回 nullptr
+   *
+   * @note 返回非空不代表扩展可用；实际能力由
+   *       IGPUInterop::OpenDevice 的成败决定。
+   */
+  virtual IGPUInterop* GetGPUInterop() const override;
+
  private:
   /**
    * @brief 渲染表面簿记（Win32）

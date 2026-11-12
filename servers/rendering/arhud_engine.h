@@ -171,6 +171,10 @@ class ARHudEngine : public IViewportProvider {
    *
    * AddScreen 时传入，引擎内部创建窗口 + surface + context + RenderViewport。
    *
+   * @par 呈现路径
+   *   默认自动选择：平台共享显存帧池可用且后端能导入 → Mode X（零回读），
+   *   否则 Mode R（回读上屏）。`force_readback` 用于 A/B 对比与故障复现。
+   *
    * @par 典型用法：
    *   @code
    *   ARHudEngine::ScreenConfig scfg;
@@ -184,6 +188,7 @@ class ARHudEngine : public IViewportProvider {
     const char* title = "AR HUD";
     uint32 width = 1280;
     uint32 height = 720;
+    bool force_readback = false;  ///< 强制 Mode R（跳过共享显存路径）
   };
 
   /** @brief 默认构造。需随后调用 Initialize() 完成初始化。 */

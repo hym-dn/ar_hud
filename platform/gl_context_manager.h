@@ -108,6 +108,8 @@
 
 namespace arhud {
 
+class IGPUInterop;  ///< 跨 API GPU 资源共享（gpu_interop.h，Mode X 用）
+
 /**
  * @brief 平台无关 OpenGL 上下文管理接口
  *
@@ -435,6 +437,28 @@ class IGLContextManager {
    * @pre 调用 gladLoadGL 前必须有有效的 GL 上下文绑定到当前线程
    */
   virtual void* GetGLProcAddress() const = 0;
+
+  /**
+   * @brief 获取跨 API GPU 资源共享实现（零拷贝上屏用）
+   *
+   * @par 用途
+   *   Mode X（`ISharedFramePool` 呈现）要求把显示侧分配的显存别名成
+   *   本 GL 后端可写对象。drivers/gl **不得**直接触碰 wgl 家族函数，
+   *   故经本口子取得平台实现（Win32: WGL_NV_DX_interop2）。
+   *
+   * @par 可用性
+   *   返回非空不代表扩展存在——只代表平台提供了该实现。真正的
+   *   可用性由 `IGPUInterop::OpenDevice` 的成败决定（驱动据此回落
+   *   Mode R 回读路径）。
+   *
+   * @return 接口指针（不拥有所有权，生命周期同本 manager）
+   * @retval nullptr 平台未提供该实现（默认）
+   *
+   * @pre 读取返回值须 Initialize() 后；调用其方法须有 current 上下文
+   */
+  virtual IGPUInterop* GetGPUInterop() const {
+    return nullptr;
+  }
 
   // ─── 状态查询 ─────────────────────────────────────────────────────
 

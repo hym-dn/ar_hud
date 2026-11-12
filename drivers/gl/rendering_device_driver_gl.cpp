@@ -608,6 +608,10 @@ void GLRenderingDeviceDriver::Shutdown() {
   state_cache_.Reset();
   current_pipeline_ = nullptr;
 
+  // 外部导入纹理已由 RD::FreeAllResources 逐个注销（TextureFree 路径），
+  // 此处只关设备关联；放在末尾是因为它要求 current GL 上下文仍有效。
+  DXInteropClose();
+
   initialized_ = false;
   ARHUD_LOG_INFO("GLRenderingDeviceDriver: Shutdown complete");
 }
@@ -973,11 +977,16 @@ TextureID GLRenderingDeviceDriver::TextureCreate(const TextureFormat& p_format,
  *
  * glDeleteTextures（延迟删除语义同 BufferFree）+ 摘 texture_infos_
  * 簿记。无效 ID 静默返回。
+ *
+ * @par 外部导入纹理（Mode X）的前置步骤
+ *   先解除 interop 别名再删 GL 名：别名句柄持有 DX 资源引用，顺序
+ *   颠倒会让注册关系悬空，而帧池随后即释放该显存。
  */
 void GLRenderingDeviceDriver::TextureFree(TextureID p_texture) {
   if (!p_texture.IsValid()) {
     return;
   }
+  DXInteropUnregisterTexture(static_cast<uint32>(p_texture.GetId()));
   GLuint gl_texture = static_cast<GLuint>(p_texture.GetId());
   glDeleteTextures(1, &gl_texture);
   texture_infos_.Erase(p_texture.GetId());

@@ -257,15 +257,45 @@ VS 多配置追加 `/Debug`、`/Release`。产物：`build/bin/<cfg>/arhud_demo_
 - **两种模式**：Mode A（单线程多 surface 切换 drawable——**当前引擎采用**）；Mode B（多线程多 Context——**保留能力未用**）。
 - WGL 要求像素格式索引一致；per-surface vsync 由实现重放。
 
-### 5.5 `IFramePresenter`（`frame_presenter.h`）
+### 5.5 平台上屏边界（`frame_presenter.h` / `shared_frame_pool.h` / `gpu_interop.h`）
 
-**平台上屏边界**（零 GL）
+**不变量的精确表述**：上屏线程**不发渲染命令**、不持有 GL 上下文——
+而不是"像素必须是 CPU 可见"。据此三条呈现路径并存：
 
-- 接口：`Initialize(void* native_window,w,h)/Finalize/Resize`、
-  `Present(pixels,w,h,stride)`（Win32 走 GDI `StretchDIBits`）、
-  `SupportsSwapPresent()`（默认 false）、`SwapPresent()`（默认 `kUnavailable`）。
-- **模式 R（kReadback）**：CPU 像素 → `Present()`。
-- **模式 S（kSwap）**：`SwapBuffers + DwmFlush`，零回读零拷贝（Windows 方案 B）。
+- `IFramePresenter`：`Initialize/Finalize/Resize`、`Present(pixels,w,h,stride)`
+  （Win32: GDI `StretchDIBits`）、`SupportsSwapPresent()`（默认 false）、
+  `SwapPresent()`（默认 `kUnavailable`）。
+- **模式 R（kReadback，兜底）**：帧缓冲归**渲染侧**（RD 私有纹理）→
+  `glReadPixels` 进 CPU 槽 → `Present()`。全帧 CPU 搬运 ×2；
+  保留它是为了"像素可核对"与不可零拷贝的环境（RDP / DWM 关闭）。
+- **模式 S（kSwap）**：帧缓冲归**窗口 backbuffer** → `SwapBuffers+DwmFlush`；
+  零拷贝但需逐屏 `wglMakeCurrent` 切 drawable（每帧 O(屏数) 次，
+  驱动可能隐式 flush）——**未启用**，多屏场景由模式 X 取代。
+- **模式 X（kShared，✅ 2026-11-08 实现）**：帧缓冲归**显示侧**。
+  `ISharedFramePool`（Win32: `DxgiSharedFramePoolWin32` = D3D11 帧环 +
+  DXGI flip-model swap chain）分配 3 帧显存并拥有 swap chain；
+  渲染侧经 `IGPUInterop`（Win32: `WGL_NV_DX_interop2`）把该显存别名成
+  GL 纹理挂进 FBO，composite pass 直写。**像素一次都不进 CPU，
+  且全程一次 `wglMakeCurrent` 都不切**（FBO 渲染与当前 drawable 无关）。
+  上屏线程只做 `CopyResource → Present1`（DXGI，非 GL）。
+  - 跨线程传递 = **帧 index（token）**，由 `FrameImageQueue` 槽承载；
+  - "显示侧读完"的保证由 interop 的 Lock/Unlock 兑现（规范规定它是
+    跨驱动同步点），故 `CommitFrame` 不轮询 GPU；
+  - 逐帧**数据驱动**：渲染侧降级（池失效/重建失败）时写 CPU 槽且
+    不登记 token，上屏线程据此自动改走 GDI——模式不在启动时定死。
+- 契约归位：`ISharedFramePool`/`IGPUInterop` 头在 `platform/` 根，
+  Win32 实现在 `platform/windows/`；`drivers/gl` 只经
+  `IGLContextManager::GetGPUInterop()` 说话，不触碰 wgl 家族函数。
+- **实测硬坑（务必留档）**：`IDXGISwapChain1::Present1` 的
+  `pPresentParameters` 在 SDK 头里是 `_In_`（非 `_In_opt_`），
+  传 `nullptr` 会在 `dxgi.dll` 内解引用 `NULL+0x10`
+  （= `DXGI_PRESENT_PARAMETERS::pScrollRect`）直接 AV——与 swap effect、
+  调用线程、窗口类样式均无关。必须传**零值结构体**。
+  最小复现程序对照验证：`Present1(1,0,nullptr)` 崩 /
+  `Present1(1,0,&零值)` 连续 10 帧 `S_OK`。
+- **拆卸顺序两条硬约束**：① 解除 interop 别名（screens Finalize）
+  必须早于池释放显存；② `wglDXCloseDeviceNV`（RD Shutdown 内）
+  必须早于池释放 D3D11 device，否则驱动侧面对已销毁设备 → AV。
 
 ---
 
@@ -281,7 +311,9 @@ VS 多配置追加 `/Debug`、`/Release`。产物：`build/bin/<cfg>/arhud_demo_
 
 ### 6.2 `IRenderingContextDriver`（RCD）— 上下文层
 
-负责 GL 上下文与 surface 生命周期（驱动侧视图）。承载 Mode R / Mode S 两种呈现能力。
+负责 GL 上下文与 surface 生命周期（驱动侧视图）。三种呈现能力里，本层
+只在 Mode S 下需要逐屏 drawable；Mode X 全程单 context 不切 drawable，
+Mode R 只用离屏 context。
 类型/方法与 `IGLContextManager` 对应（Surface/Context 生命周期），是 servers 装配根注入的实现契约。
 
 ### 6.3 `IRenderingDeviceDriver`（RDD）— 设备驱动层
@@ -437,19 +469,35 @@ v3.2 唯一的**阻塞出口**是整批屏障 `Sync()`（对齐 Godot `sync()`�
 BeginFrame ─► ProcessEvents
   │ 经 RenderServer 发 Set*（异步）
   ├─ SubmitScene ──(Push)────────────────► Flush → 逐屏 RenderFromStorage
-  │                                          └─ 脏屏：渲 FBO → glReadPixels → MarkReady
+   │                                          └─ 脏屏：渲 FBO → 呈现 → MarkReady
+   │                                             Mode X：composite 直写共享显存（零回读）
+   │                                             Mode R ：glReadPixels → CPU 槽
   │                                                                     │
   │                                          ◄────── frame slot（HasInFlight 背压，≤1 在飞）
 EndFrame ─► (帧节拍)                                                   AcquireReady
-                                                                        ├─ Mode R: Present(CPU 像素)
-                                                                        ├─ Mode S: SwapPresent(零拷贝)
-                                                                        └─ Release（唤醒渲染线程）
+                                                                         ├─ Mode X: CommitFrame(token) 零拷贝
+                                                                         ├─ Mode R: Present(CPU 像素)
+                                                                         ├─ Mode S: SwapPresent(零拷贝)
+                                                                         └─ Release（唤醒渲染线程）
 ```
 
 - `FrameImageQueue`（每屏双槽）：状态机 `FREE → WRITING → READY → COMMITTED → ON_SCREEN → FREE`；
   `HasInFlight()` 防渲染超前（每屏最多 1 帧在飞）；`Release()` 回槽并唤醒渲染线程（free-after-release 防死锁）。
-- `PresentThread`（每屏，零 GL）：`AcquireReady → Present/SwapPresent → MarkOnScreen → Release`；
-  vsync 等待各屏并行。`PresentMode`：`kReadback`（默认）/ `kSwap`（Windows 方案 B）。
+  **两种载体形态**：CPU 像素背衬（Mode R）；同形态保留 + `frame_token` 携带
+  平台帧池 index（Mode X——像素不进 CPU，槽只作握手）。CPU 背衬在 Mode X
+  下刻意保留：换来"运行期降级零危险"（不在中途重分配与上屏线程竞争的缓冲），
+  代价是每屏 2×w×h×4 常驻内存。
+- `PresentThread`（每屏，不发渲染命令）：`AcquireReady → 按 token 逐帧选出路
+  （有 token=pool->CommitFrame；无 token=GDI Present）→ MarkOnScreen → Release`；
+  vsync 等待各屏并行。`PresentMode`：`kReadback`（默认）/ `kSwap`（未启用）/
+  `kShared`（✅ 2026-11-08）。**逐帧数据驱动而非启动定死**：渲染侧运行期降级
+  时写 CPU 槽且不登记 token，上屏线程据此自动改走 GDI，画面不会停在最后一帧。
+  Finalize 输出一行统计（shared/readback/degraded/failed），使"零回读是否
+  真的成立"可验收。
+- 验证开关：`ARHUD_FORCE_READBACK=1` 强制回读（A/B 对比）；
+  `ARHUD_DEBUG_SAMPLE=1` 打开上屏帧亮度采样（把即将上屏的帧临时读回一次算
+  平均亮度——零拷贝路径唯一可核对"画面确有内容"的出口，代价与该帧走一次
+  Mode R 同级，仅验证期开）。
 - **强制全屏重渲（ADR-0008）**：窗口 `OnPaint`/`OnResize` → 主线程经 `WindowCallbacks` 调 `RequestFullRedraw()`，
   只置原子 `force_redraw_` 并唤醒渲染线程（**不触碰 ItemStorage**）；渲染线程消费标志时执行 `MarkAllScreens()`。
 - **窗口 resize 重建（B3-M0.3）**：主线程 `HandleResize` 置原子 `resize_pending_ / new_width_ / new_height_` 并唤醒渲染线程；
@@ -957,14 +1005,22 @@ item RID 无代际、不复用（§7.5）；GPU 资源 RID 走代际防悬垂。
 | 线程 | 数量 | 拥有 | 职责 |
 |---|---|---|---|
 | 主线程 | 1 | 无 GL 资源所有权（初始化期例外） | 输入、发命令、`SubmitScene` |
-| 渲染线程 | 1 | GL 上下文 + 全部 Storage + Compositor | Flush 命令、逐屏渲染、回读 |
-| 上屏线程 | 每屏 1 | 零 GL | `Present`/`SwapPresent`，独立等 vsync |
+| 渲染线程 | 1 | GL 上下文 + 全部 Storage + Compositor | Flush 命令、逐屏渲染、呈现源准备（Mode X 直写共享显存 / Mode R 回读） |
+| 上屏线程 | 每屏 1 | 不发渲染命令（Win32 Mode X 持 D3D11 device 引用，但无 GL 上下文） | `CommitFrame`/`Present`/`SwapPresent`，独立等 vsync |
 
 跨线程通道：`CommandQueue`（主→渲染）、`FrameImageQueue`（渲染→上屏），均由 `Semaphore` 唤醒。
+**通道上流过的东西决定成本**：Mode R 传 CPU 像素（等价于传图像），Mode X 只传帧 index。
 
 ### 9.3 帧与上屏路径
 
-现状保留 **Mode R（kReadback）** 与 **Mode S（kSwap）**（§5.5 / §7.7）。
+现状保留 **Mode R（kReadback，兜底）**、**Mode S（kSwap，未启用）** 与
+**Mode X（kShared，✅ 2026-11-08 实现并验证）**（§5.5 / §7.7）。
+默认自动选 Mode X，探测/运行期任一环节不成立即逐帧回落 Mode R；
+`ARHUD_FORCE_READBACK=1` 可强制 Mode R 做 A/B。
+实测（1280×720 canvas demo，6000 帧）：Mode X `shared=5812 / readback=0 /
+0 MB / 0.0 ms`；Mode R `readback=5424 帧 / 19,068 MB / 26,865 ms`
+（≈4.95 ms/帧的 GPU→CPU 搬运与等待）。两路上屏帧的平均亮度同分布
+（5–9/255），证明画面同源。
 生产环境（QNX/Linux/Android）规划走 EGLImage/DMA-BUF + release-event 模型（对应 `IFramePresenter::SwapPresent`）。
 
 ### 9.4 依赖与契约规则（复核清单）
@@ -1018,7 +1074,7 @@ item RID 无代际、不复用（§7.5）；GPU 资源 RID 走代际防悬垂。
 | RCD / RDD / RD | RenderingContextDriver / RenderingDeviceDriver / RenderingDevice（三阶 GPU 抽象） |
 | RSG | RenderingServerGlobals（Godot 全局可达点；本工程现状为 `RenderGlobals`） |
 | Route B | 主线程发命令 / 渲染线程执行的线程模型 |
-| Mode R / Mode S | 回读上屏 / Swap 上屏（`kReadback` / `kSwap`） |
+| Mode R / Mode S / Mode X | 回读上屏 / Swap 上屏 / **共享显存上屏**（`kReadback` / `kSwap` / `kShared`）；X = 帧缓冲归显示侧，零 GPU→CPU |
 | Storage | 资源 Storage（GPU-backed，归 Compositor）与状态 Storage（CPU-only，如 ItemStorage） |
 | 有效状态 | item 沿父链合成后的 transform/opacity/visibility/z（ADR-0005） |
 | 强制重绘 | 外部 WM_PAINT/WM_SIZE 触发的全屏重渲（ADR-0008） |

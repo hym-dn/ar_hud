@@ -25,6 +25,7 @@ set(TEST_SOURCES
     rendering/test_command_queue.cpp
     rendering/test_camera_routing.cpp
     rendering/test_item_storage.cpp
+    core/test_rid_owner.cpp    # RID 编码地基：槽复用 + 跨表唯一性
     # core/test_sync.cpp             # TODO: add when writing core tests
     # core/test_containers.cpp       # TODO
     # integration/test_render_frame.cpp  # TODO: needs NullDriver

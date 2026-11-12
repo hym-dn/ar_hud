@@ -29,6 +29,8 @@ set(PLATFORM_SOURCES
     windows/display_server_win32.cpp # Win32 display server implementation (multi-window/screen)
     windows/gl_context_manager_win32.cpp     # Win32 GL context manager (WGL, pixel format, 3.3 core profile, VSync)
     windows/frame_presenter_win32.cpp # Win32 frame presenter (GDI StretchDIBits, FBO readback → screen)
+    windows/dxgi_shared_frame_pool_win32.cpp # Win32 共享显存帧池 (D3D11 帧环 + DXGI flip-model, Mode X 零回读)
+    windows/gpu_interop_win32.cpp          # Win32 跨 API 资源共享 (WGL_NV_DX_interop2, Mode X GL 侧别名)
 )
 
 # --- Header file list ----------------------------------------------------
@@ -38,11 +40,15 @@ set(PLATFORM_HEADERS
     display_server.h              # Display server interface (IDisplayServer, multi-window/screen management)
     gl_context_manager.h                   # Platform-independent GL context manager interface (IGLContextManager)
     frame_presenter.h             # Platform-independent frame presenter interface (IFramePresenter, FBO→screen)
+    shared_frame_pool.h           # 共享显存帧池接口 (ISharedFramePool, Mode X 零回读上屏)
+    gpu_interop.h                 # 跨 API GPU 资源共享接口 (IGPUInterop, 外部显存别名)
     windows/window_win32.h        # Win32 window implementation (Win32Window, WndProc, CreateWindowEx)
     windows/screen_win32.h        # Win32 screen implementation (Win32Screen, EnumDisplayMonitors)
     windows/display_server_win32.h # Win32 display server implementation (Win32DisplayServer)
     windows/gl_context_manager_win32.h     # Win32 GL context manager (WGL, pixel format, 3.3 core profile, VSync)
     windows/frame_presenter_win32.h # Win32 frame presenter (GDI StretchDIBits, top-down DIB)
+    windows/dxgi_shared_frame_pool_win32.h # Win32 共享显存帧池 (D3D11/DXGI flip-model)
+    windows/gpu_interop_win32.h          # Win32 跨 API 资源共享 (WGL_NV_DX_interop2)
 )
 
 # --- Library target definition -------------------------------------------
@@ -70,6 +76,8 @@ target_include_directories(arhud_platform
 
 # --- Platform libraries ---------------------------------------------------
 # Win32 window management requires user32 (CreateWindowEx, WndProc, etc.)
+# Mode X 共享显存上屏需要 d3d11 + dxgi（D3D11 帧缓冲环 + DXGI flip-model
+# swap chain）；GL 侧 interop 走 opengl32 的 wglGetProcAddress 入口。
 if(WIN32)
-    target_link_libraries(arhud_platform PUBLIC user32 gdi32 opengl32)
+    target_link_libraries(arhud_platform PUBLIC user32 gdi32 opengl32 d3d11 dxgi)
 endif()

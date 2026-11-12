@@ -7,9 +7,26 @@
  * 核心机制：
  *   - RID 是 64 位不透明 ID，隐藏内部指针，保证 API 安全性
  *   - 低 32 位 = 内部条目索引（O(1） 数组查找）
- *   - 高 32 位 = 世代计数器（释放后递增，检测 use-after-free）
+ *   - 高 32 位 = **表标识 + 世代**复合标签（见下方编码说明）
  *   - 空闲链表复用已释放槽位，避免数组无限增长
  *   - RIDOwner 管理 RID 到对象指针的双向映射
+ *
+ * @par RID 高 32 位为什么要带表标识（2026-11-08 修正）
+ *   早期编码高 32 位只有"该表内世代"，而低 32 位是**每个 RIDOwner
+ *   各自的本地槽号**——于是 `buffer_owner_` 的 (槽5, 世代1) 与
+ *   `texture_owner_` 的 (槽5, 世代1) 是**同一个 64 位数值**。
+ *   RD 的级联释放 `FreeDriverResourceByRid()` 正是"逐表 Owns() 探测"
+ *   来判定资源类型的，同值 RID 会让它把纹理的依赖边认成 Buffer 并
+ *   误杀活对象（症状：resize 后 `BufferUpdate: invalid buffer RID` /
+ *   `DrawListBegin invalid render pass for framebuffer` 成百出现）。
+ *   现在高 32 位 = (表标识 << 20) | 世代，跨表不可能同值。
+ *
+ * @par 槽号复用的索引基准（同一轮修正）
+ *   `MakeRid()` 从空闲链表取出的是 **1-based** 槽号（`Free()` 存进去的
+ *   就是它），而 `entries_` 是 0-based 数组。历史上这里写成
+ *   `entries_[index]`，等于改写了**邻居**槽位并把新 RID 指向一个从未
+ *   置有效的槽——复用即损坏。现统一为 `entries_[index - 1]`，
+ *   并由 tests/core/test_rid_owner.cpp 钉住。
  *
  * 设计取舍：
  *   - 代际索引而非指针编码：安全、可验证、支持 HashMap 键
@@ -54,6 +71,7 @@
 #ifndef ARHUD_CORE_TEMPLATE_RID_H_
 #define ARHUD_CORE_TEMPLATE_RID_H_
 
+#include <atomic>
 #include <cstddef>
 
 #include "os/memory.h"
@@ -65,18 +83,58 @@
 namespace arhud {
 
 // ═══════════════════════════════════════════════════════════════════════
+// RID 编码常量与表标识分配
+// ═══════════════════════════════════════════════════════════════════════
+
+namespace rid_detail {
+
+/** @brief 世代占用的低位数（每槽可复用 2^20 次） */
+constexpr uint32 kGenerationBits = 20;
+/** @brief 世代掩码 */
+constexpr uint32 kGenerationMask = (1u << kGenerationBits) - 1u;
+/** @brief 表标识可用数量（2^(32-20) = 4096，RD 现用 9 张表） */
+constexpr uint32 kMaxTableId = (1u << (32u - kGenerationBits)) - 1u;
+
+/**
+ * @brief 取下一个表标识（进程内唯一，跨 TU 单例）
+ *
+ * @return 1-based 表标识；用尽后返回 kMaxTableId 并让调用方在断言中暴露
+ *
+ * @note inline 函数的局部 static 在整个进程只有一份实例——放在模板类内部
+ *       会变成"每个实例化各一份"，那就等于没有表标识，务必留在这里。
+ */
+inline uint32 NextTableId() {
+  static std::atomic<uint32> s_next{0};
+  const uint32 id = s_next.fetch_add(1u, std::memory_order_relaxed) + 1u;
+  return id < kMaxTableId ? id : kMaxTableId;
+}
+
+/**
+ * @brief 组合高 32 位标签
+ *
+ * @param[in] p_table_id  表标识（1-based）
+ * @param[in] p_generation 该槽的世代计数
+ * @return 写入 RID 高 32 位的标签
+ */
+inline uint32 MakeTag(uint32 p_table_id, uint32 p_generation) {
+  return (p_table_id << kGenerationBits) | (p_generation & kGenerationMask);
+}
+
+}  // namespace rid_detail
+
+// ═══════════════════════════════════════════════════════════════════════
 // RID — 不透明资源 ID
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
  * @brief 不透明资源标识符（Resource Identifier）
  *
- * 64 位不透明 ID，内部使用代际索引编码：
- *   - bits [31:0]   → 条目索引（指向 RIDOwner 内部数组的下标）
- *   - bits [63:32]  → 世代计数器（每次释放后递增，用于检测悬空引用）
+ * 64 位不透明 ID，内部编码：
+ *   - bits [31:0]   → 条目索引（1-based，指向所属 RIDOwner 的数组下标+1）
+ *   - bits [63:32]  → 标签 = (表标识 << 20) | 世代
  *
  * 默认构造的 RID（id_=0）表示无效/空 ID。
- * 有效 RID 的 id_ 始终非零（索引从 1 开始，或世代非零）。
+ * 有效 RID 的 id_ 始终非零（索引从 1 开始，表标识从 1 开始）。
  *
  * 可作为 HashMap 键（提供 GetHash() 和 operator==）。
  */
@@ -198,15 +256,19 @@ class RIDOwner {
   struct Entry {
     T* object = nullptr;    ///< 托管的对象指针（不拥有所有权）
     uint32 generation = 0;  ///< 世代计数器（释放后递增）
+    uint32 tag = 0;         ///< 最近一次发出 RID 的高 32 位标签（表标识|世代）
     bool valid = false;     ///< 当前是否有效
   };
   LocalVector<Entry> entries_;
   List<uint32> free_list_;
+  uint32 table_id_ = 0;  ///< 本表的 RID 标识位（保证跨表 RID 不同值）
 #if ARHUD_DEBUG
   uint32 alloc_count_ = 0;  ///< Debug: 当前活跃分配数
 #endif
  public:
-  RIDOwner() = default;
+  RIDOwner() {
+    table_id_ = rid_detail::NextTableId();
+  }
 
   ~RIDOwner() {
     Clear();
@@ -235,20 +297,20 @@ class RIDOwner {
     uint32 index;
     uint32 generation;
     if (!free_list_.IsEmpty()) {
+      // free_list_ 存的是 **1-based** 槽号（Free() 如此写入），
+      // entries_ 是 0-based —— 历史上少写 -1 会改写邻居槽并让新 RID
+      // 指向未置有效的槽，复用即损坏。
       index = free_list_.Front()->Get();
       free_list_.Erase(free_list_.Front());
-      Entry& entry = entries_[index];
+      ARHUD_ASSERT(index >= 1 && index <= static_cast<uint32>(entries_.Size()),
+                   "RIDOwner::MakeRid() free slot index out of range");
+      Entry& entry = entries_[index - 1];
       ARHUD_ASSERT(!entry.valid,
                    "RIDOwner::MakeRid() free slot should be invalid");
       // 纵深防御：Free() 释放时已 ++generation，此处再 +1 非必需
       // （单留任一递增即可保证新 RID ≠ 旧 RID）。两处都写是为防
-      // 后人误删其一导致悬空 RID 检测失效；代价是每次复用多烧 1 个
-      // 世代值（uint32 回绕提前一半，HUD 量级不可达）。
-      // 副作用：发出的 RID 全为奇数 gen，空闲槽全为偶数（未被利用）。
+      // 后人误删其一导致悬空 RID 检测失效。
       generation = entry.generation + 1;
-      entry.object = p_object;
-      entry.generation = generation;
-      entry.valid = true;
     } else {
       index = static_cast<uint32>(entries_.Size()) + 1;
       generation = 1;
@@ -258,10 +320,17 @@ class RIDOwner {
       entry.valid = true;
       entries_.PushBack(entry);
     }
+
+    Entry& slot = entries_[index - 1];
+    slot.object = p_object;
+    slot.generation = generation;
+    slot.tag = rid_detail::MakeTag(table_id_, generation);
+    slot.valid = true;
 #if ARHUD_DEBUG
     ++alloc_count_;
 #endif
-    return RID((static_cast<uint64>(generation) << 32) | index);
+    return RID((static_cast<uint64>(slot.tag) << 32) |
+               static_cast<uint64>(index));
   }
 
   /**
@@ -286,8 +355,8 @@ class RIDOwner {
       return nullptr;
     }
     const Entry& entry = entries_[index - 1];
-    uint32 expected_gen = static_cast<uint32>(p_rid.GetId() >> 32);
-    if (ARHUD_UNLIKELY(!entry.valid || entry.generation != expected_gen)) {
+    const uint32 expected_tag = static_cast<uint32>(p_rid.GetId() >> 32);
+    if (ARHUD_UNLIKELY(!entry.valid || entry.tag != expected_tag)) {
       return nullptr;
     }
     return entry.object;
@@ -312,8 +381,8 @@ class RIDOwner {
       return nullptr;
     }
     const Entry& entry = entries_[index - 1];
-    uint32 expected_gen = static_cast<uint32>(p_rid.GetId() >> 32);
-    if (ARHUD_UNLIKELY(!entry.valid || entry.generation != expected_gen)) {
+    const uint32 expected_tag = static_cast<uint32>(p_rid.GetId() >> 32);
+    if (ARHUD_UNLIKELY(!entry.valid || entry.tag != expected_tag)) {
       return nullptr;
     }
     return entry.object;
@@ -338,8 +407,8 @@ class RIDOwner {
       return false;
     }
     const Entry& entry = entries_[index - 1];
-    uint32 expected_gen = static_cast<uint32>(p_rid.GetId() >> 32);
-    return entry.valid && entry.generation == expected_gen;
+    const uint32 expected_tag = static_cast<uint32>(p_rid.GetId() >> 32);
+    return entry.valid && entry.tag == expected_tag;
   }
 
   /**
@@ -365,8 +434,8 @@ class RIDOwner {
       return false;
     }
     Entry& entry = entries_[index - 1];
-    uint32 expected_gen = static_cast<uint32>(p_rid.GetId() >> 32);
-    if (ARHUD_UNLIKELY(!entry.valid || entry.generation != expected_gen)) {
+    const uint32 expected_tag = static_cast<uint32>(p_rid.GetId() >> 32);
+    if (ARHUD_UNLIKELY(!entry.valid || entry.tag != expected_tag)) {
       return false;
     }
     entry.valid = false;
@@ -394,6 +463,7 @@ class RIDOwner {
       entries_[i].object = nullptr;
       entries_[i].valid = false;
       entries_[i].generation = 0;
+      entries_[i].tag = 0;
     }
     entries_.Clear();
 #if ARHUD_DEBUG
@@ -414,7 +484,7 @@ class RIDOwner {
 #endif
     uint32 count = 0;
     for (uint32 i = 0; i < entries_.Size(); ++i) {
-      if (entries_[i].valid_) {
+      if (entries_[i].valid) {
         ++count;
       }
     }
@@ -448,9 +518,11 @@ class RIDOwner {
     for (uint32 i = 0; i < entries_.Size(); ++i) {
       const Entry& entry = entries_[i];
       if (entry.valid && entry.object != nullptr) {
-        uint32 index = i + 1;
-        uint64 rid_id = (static_cast<uint64>(entry.generation) << 32) |
-                        static_cast<uint64>(index);
+        // 必须回放 entry.tag（含表标识），不能现场用 generation 重算，
+        // 否则遍历得到的 RID 与当初发出的不是同一个值。
+        const uint32 index = i + 1;
+        const uint64 rid_id = (static_cast<uint64>(entry.tag) << 32) |
+                              static_cast<uint64>(index);
         p_callback(RID(rid_id), entry.object);
       }
     }

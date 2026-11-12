@@ -27,6 +27,7 @@
 
 #include "io/logger.h"
 #include "os/memory.h"
+#include "windows/gpu_interop_win32.h"
 
 /**
  * @brief WGL_ARB_create_context 属性常量
@@ -404,8 +405,30 @@ void GLContextManagerWin32::DestroySurface(SurfaceID p_surface) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// IGLContextManager 接口实现 - 跨 API 资源共享
+// ══════════════════════════════════════════════════════════════════════════
+
+/**
+ * @brief 取得跨 API GPU 资源共享实现（Mode X 零拷贝上屏）
+ *
+ * @par 实现细节
+ *   WGL_NV_DX_interop2 的实现住在 gpu_interop_win32（无状态单例）；
+ *   本方法只负责"未初始化不暴露"的门禁。真正的扩展可用性由调用方
+ *   OpenDevice 的结果决定。
+ *
+ * @return 已初始化时为接口指针，否则 nullptr
+ */
+IGPUInterop* GLContextManagerWin32::GetGPUInterop() const {
+  if (!is_initialized_) {
+    return nullptr;
+  }
+  return GPUInteropWin32::GetSingleton();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
 // IGLContextManager 接口实现 - 上下文绑定
 // ══════════════════════════════════════════════════════════════════════════
+
 
 /**
  * @brief 将 Context 绑定到 Surface（当前线程）

@@ -55,10 +55,23 @@ Godot 对齐绞杀者迁移 **S0 + S1 大部完成**；全库 Google 原教风�
 
 ### 2.3 近期修复线（渲染链路，2026-11-08 一天内闭环）
 
-全部 ✅，明细见 §3。当前无 ⛔ 项。
+全部 ✅，明细见 §3。**当前 ⛔ 一项：MX-MULTI-01**（多屏 Mode X 非确定性失败，
+见 §5；单屏与基线回读不受影响，demo 冒烟门禁按 `tools/mode-x-validation.md`
+D 组执行，多屏 A 组用例暂标"已知失败"）。
 
 ## 3. 已完成历史（append-only，新条目加在最上面）
 
+- **2026-11 Mode X 实测检查清单落地（`tools/mode-x-validation.md`）+ canvas demo `--screens=N` 入口**：
+  清单 A（多屏）/ C（混合显卡）/ D（回归门禁）三组 + §0 验证开关与判定口径。
+  本机即混合显卡（Intel Iris Xe + NVIDIA MX450）双物理输出，跑通 **A2 基线双屏**
+  （6000 帧两屏 `readback≈5472 degraded=0` 干净退出）、
+  **C1 适配器/LUID 判定**（帧池与 GL 同卡 MX450、两输出覆盖目标窗口）、
+  **C5 虚拟显示适配器共存**。**新发现缺陷 MX-MULTI-01**（记 §5）：`--screens=2`
+  下 Mode X **非确定性失败**——一次 ~1280 帧后 device-lost（0x887A0005）屏 1 逐帧
+  降级 GDI 跑完（回落门按设计兜住画面）；一次 ~704 帧直接 AV 于 NVIDIA 驱动
+  `nvwgf2umx.dll+0x442737`（Windows 事件日志 0xc0000005）；一次 50s 无恙（人为终止）。
+  A1/A4/A5 在其修复前不能标 ✅。曾评估加 `ARHUD_D3D_ADAPTER` 代码开关强制
+  选卡，裁决为**不引入**（强制选卡走 OS 级图形设置，代码不养测试专用分支）。
 - **2026-11-08 窗口 resize 破坏 RD 对象的缺陷修复（三处根因，含 RID 地基修正）**：
   上条遗留的 ⛔ 已解除。三处独立根因逐一坐实并修复：
   ① **尺寸双源** —— `BeginFrame` 轮询"首屏窗口宽高"与 `WM_SIZE` 回调并行投递
@@ -149,14 +162,27 @@ S6 RendererViewport → S7 收口（删 `render_server.*`，判定 `grep -r "ren
   HUD 静态场景零重渲验证（本轮已见：静态内容下 6000 循环仅 3 帧真渲染）。
 - **Mode X 待办**：① ~~resize 期间共享目标重建~~ ✅ 2026-11-08 已验证（三次重建均
   重新就绪、`degraded=0`）；
-  ② 多屏实测（本机仅单屏验证，需确认 3 屏各一条上屏线程共用同一 D3D11
-  device 的行为）；③ `CommitFrame` 的 `p_timeout_ms` 目前未用（归还保证落在
+  ② ~~多屏实测~~ 清单已落地（`tools/mode-x-validation.md`，本机双屏已跑：
+  基线通过、Mode X 撞出 §5 MX-MULTI-01）——剩 3~4 屏与跨物理显示器拖拽（A4/A5），
+  依赖 MX-MULTI-01 修复；③ `CommitFrame` 的 `p_timeout_ms` 目前未用（归还保证落在
   interop Lock 上）——若实测有撕裂，改为在 present 侧等 GPU 消费完成；
   ④ CPU 背衬的 2×w×h×4 常驻内存可改为降级时再分配（当前刻意保留，换降级安全）。
 - **测试扩展**：RD/Storage 层单测（现 command_queue/item_storage/camera_routing/rid_owner 共 4 文件 42 用例）；NullDriver 集成测试（tests/CMakeLists 注释预留）。
 
 ## 5. 已知风险与注意
 
+- **⛔ MX-MULTI-01（2026-11 发现，未修复）：多屏 Mode X 非确定性失败**。
+  `--screens=2` 高压下观测到三种结局：① ~1280 帧 device-lost（0x887A0005）→
+  屏 1 interop Lock 连锁失败（`GetLastError=0`，770 次）→ 逐帧降级门生效、
+  以 GDI 回读跑完（画面未停滞，回落设计按预期兜底）；② ~704 帧直接 AV 于
+  `nvwgf2umx.dll+0x442737`（NVIDIA 驱动内，Windows 事件日志 0xc0000005）；
+  ③ 50s 无恙。单屏 6000 帧无恙；基线双屏（FORCE_READBACK）无恙——问题面
+  收窄在"**多帧池 × interop × 并行 present** 共用同一 D3D11 device"。
+  头号嫌疑：两 present 线程共用 `g_dx_context`（multithread-protect 锁语义
+  与 GL interop 命令流的交互）；次嫌疑：flip-model 覆写 back buffer 的窗口期。
+  定位先补错误采集：device-lost 分支打 `GetDeviceRemovedReason`，Lock 失败
+  路径区分"句柄失效/设备移除"（error=0 不可信）。复现与用例矩阵见
+  `tools/mode-x-validation.md` §1/§3；修复前该文件 A1/A4/A5 不能标 ✅。
 - **✅ 窗口 resize 破坏 RD 对象的缺陷（2026-11-08 修复，明细见 §3）**：三处根因
   （尺寸双源 / RID 跨表不唯一 / render_pass 随尺寸误重建）全部坐实并修复，
   Mode X 与基线回读 resize 期间错误计数归零、不收敛消失、共享路径重建后不降级。

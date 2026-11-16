@@ -106,6 +106,10 @@ set ARHUD_DEBUG_SAMPLE=1     :: 每 300 帧采样一次"即将上屏帧"的平�
 与 `RenderViewport finalized (present path: shared=… readback=… MB… ms GPU->CPU)`。
 `shared>0 且 readback=0/0 MB` = 零回读成立；`degraded>0` = 发生过运行期降级，须查因。
 
+呈现链改动（Mode X / 帧池 / interop / 上屏线程）的前后回归，按
+`tools/mode-x-validation.md` 清单执行（多屏 A 组 / 混合显卡 C 组 / 门禁 D 组，
+含 `--screens=N` 用法与已知缺陷 MX-MULTI-01 的复现步骤）。
+
 ## 6. 编码规范（摘要；全量裁决与存量迁移见 `docs/skill/arhud-coding-style/SKILL.md`）
 
 - **风格基线 = Google C++ Style 原教**（2026-11-07 裁决）：80 列、2 空格缩进、namespace 体**不缩进**、

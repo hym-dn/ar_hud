@@ -22,6 +22,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <thread>
 
 #include "arhud_engine.h"
@@ -38,9 +40,50 @@ static uint8_t s_checkerboard_pixels[4 * 4] = {
 /** @brief 绿色像素数据（动态创建纹理用） */
 static uint8_t s_green_pixels[4] = {0, 255, 0, 255};
 
-int main() {
+// 多屏冒烟入口的屏数上限（tools/mode-x-validation.md A 组用例）
+static constexpr uint32_t kMaxDemoScreens = 4;
+
+// 无格式化库环境下拼 "ARHud - Phase 4 Canvas Demo [N]"（工程禁 printf 家族）
+static void BuildScreenTitle(char* o_title, size_t p_capacity,
+                             uint32_t p_index) {
+  static const char kPrefix[] = "ARHud - Phase 4 Canvas Demo [";
+  static const char kSuffix[] = "]";
+  const size_t prefix_len = std::strlen(kPrefix);
+  if (p_capacity < prefix_len + 3) {
+    o_title[0] = '\0';
+    return;
+  }
+  std::memcpy(o_title, kPrefix, prefix_len);
+  size_t len = prefix_len;
+  // p_index < kMaxDemoScreens ≤ 10：单位数即够，多位数按十进制展开兜底
+  char digits[8];
+  size_t digit_count = 0;
+  uint32_t value = p_index;
+  do {
+    digits[digit_count++] = static_cast<char>('0' + (value % 10u));
+    value /= 10u;
+  } while (value != 0u);
+  while (digit_count > 0) {
+    o_title[len++] = digits[--digit_count];
+  }
+  std::memcpy(o_title + len, kSuffix, sizeof(kSuffix));  // 含结尾 '\0'
+}
+
+int main(int argc, char** argv) {
   InitializeLogger();
   ARHUD_LOG_INFO("=== Phase 4 Canvas Demo ===");
+
+  // --screens=N（1~kMaxDemoScreens，默认 1）：每屏一个窗口 + 帧池 +
+  // 上屏线程；各屏 cull_mask 默认全通，场景同时投到所有屏。
+  uint32_t screen_count = 1;
+  for (int i = 1; i < argc; ++i) {
+    if (std::strncmp(argv[i], "--screens=", 10) == 0) {
+      const int parsed = std::atoi(argv[i] + 10);
+      const bool in_range = parsed >= 1 &&
+                            static_cast<uint32_t>(parsed) <= kMaxDemoScreens;
+      screen_count = in_range ? static_cast<uint32_t>(parsed) : 1;
+    }
+  }
 
   {
     ARHudEngine engine;
@@ -52,12 +95,19 @@ int main() {
       return 1;
     }
 
-    ARHudEngine::ScreenConfig screen_cfg;
-    screen_cfg.title = "ARHud - Phase 4 Canvas Demo";
-    screen_cfg.width = kWindowWidth;
-    screen_cfg.height = kWindowHeight;
-    engine.AddScreen(screen_cfg);
-    ARHUD_LOG_INFO("ARHudEngine initialized");
+    for (uint32_t s = 0; s < screen_count; ++s) {
+      ARHudEngine::ScreenConfig screen_cfg;
+      char title[64];
+      BuildScreenTitle(title, sizeof(title), s);
+      screen_cfg.title = title;
+      screen_cfg.width = kWindowWidth;
+      screen_cfg.height = kWindowHeight;
+      if (engine.AddScreen(screen_cfg) == RenderViewport::kInvalidId) {
+        ARHUD_LOG_ERROR("kFailed", "AddScreen(%u) failed", s);
+        return 1;
+      }
+    }
+    ARHUD_LOG_INFO("ARHudEngine initialized (%u screen(s))", screen_count);
 
     RenderViewport* render_viewport = engine.GetScreen(0);
     RenderingServer* render_server = engine.GetRenderServer();

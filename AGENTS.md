@@ -37,7 +37,7 @@ core → platform → drivers → servers → scene → app        （单向，�
 | `servers/` | arhud_servers | 引擎主体：RD / 命令 / Storage / Renderer / 视口 / 帧编排 / 引擎入口 | 见 §3 |
 | `scene/` | arhud_scene | 空壳（Phase 6 场景树），位于 servers 之上 | `scene_placeholder.cpp` |
 | `app/` | arhud_demo_* | 5 个 demo：phase2（越层豁免）+ phase4 canvas/spatial/compositor/text | 各 `<dir>/main.cpp` |
-| `tests/` | arhud_tests | GoogleTest 3 个：command_queue / item_storage / camera_routing | `tests/CMakeLists.txt` |
+| `tests/` | arhud_tests | GoogleTest 4 文件 42 用例：command_queue / item_storage / camera_routing / rid_owner（RID 地基） | `tests/CMakeLists.txt` |
 
 **三条硬性规则**（设计 skill §1.4，评审必查）：
 1. 契约归位：接口头住模块根，平台/后端实现在子目录（`drivers/*.h` ↔ `drivers/gl/`；`platform/*.h` ↔ `platform/windows/`）。
@@ -89,7 +89,7 @@ build.bat conan          :: conan install + Debug（推荐）
 build.bat clean
 
 cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --config Debug   :: 直接 CMake 亦可
-ctest --test-dir build -C Debug            :: 3 个测试须全绿
+ctest --test-dir build -C Debug            :: 42 用例须全绿
 ```
 
 产物：`build/bin/<cfg>/arhud_demo_*.exe`、`build/lib/<cfg>/arhud_*.lib`。
